@@ -1,12 +1,13 @@
 -- Gameplay scene: hosts the platformer room, wires the player mechanic
 -- (Z jump / X kick / C hold) and draws placeholder level art.
 local render = require("core.graphics.render")
+local physics = require("core.physics")
 local text = require("core.text")
 local sceneEngine = require("core.scenes")
 local fx = require("core.graphics.fx")
 local camera = require("core.graphics.camera")
 local playerModule = require("core.player")
-local propModule = require("core.prop")
+local boxEntity = require("levels.example.entities.box")
 
 local gameplay = {}
 
@@ -35,7 +36,7 @@ local player
 local function buildLevel()
     world.props = {}
     for _, def in ipairs(LEVEL_PROPS) do
-        world.props[#world.props + 1] = propModule.new(def.x, def.y, {
+        world.props[#world.props + 1] = boxEntity.new(def.x, def.y, {
             label = def.label,
             color = def.color,
         })
@@ -53,13 +54,25 @@ local function buildLevel()
     end
 end
 
-buildLevel()
+function gameplay.load()
+    boxEntity.load()
+    buildLevel()
+end
 
 function gameplay.update(delta)
     player:update(delta, world)
     for _, prop in ipairs(world.props) do
         prop:update(delta, world)
     end
+
+    -- All dynamic objects collide with one another after their individual
+    -- movement. Their mass comes from collider/image area, so larger objects
+    -- transfer more momentum into smaller objects.
+    local bodies = { player }
+    for _, prop in ipairs(world.props) do
+        bodies[#bodies + 1] = prop
+    end
+    physics.resolveBodyCollisions(bodies, world.solids)
 end
 
 function gameplay.keypressed(key)

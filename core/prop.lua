@@ -18,6 +18,11 @@ function prop.new(x, y, options)
     self.x, self.y = x or 0, y or 0
     self.w = options.w or 16
     self.h = options.h or 16
+    if options.image then
+        self.w = options.w or options.image:getWidth()
+        self.h = options.h or options.image:getHeight()
+    end
+    self.mass = physics.massFromSize(self.w, self.h, options.density)
     self.vx, self.vy = 0, 0
     self.onGround = false
     self.held = false

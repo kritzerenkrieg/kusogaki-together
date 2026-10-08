@@ -51,6 +51,8 @@ function player.new(x, y)
     local self = setmetatable({}, { __index = player })
     self.x, self.y = x or 0, y or 0
     self.w, self.h = 16, 26
+    self.mass = physics.massFromSize(self.w, self.h)
+    self.isPlayer = true
     self.vx, self.vy = 0, 0
     self.facing = 1
     self.onGround = false

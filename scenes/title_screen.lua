@@ -9,7 +9,11 @@ local titlePath = "assets/graphics/ui/title/title.png"
 
 -- ---- Title screen (main menu) state ----
 local selectedOption = 1
-local options = { "START", "OPTION", "EXIT" }
+local options = {
+    { imagePath = "assets/graphics/ui/title/play.png" },
+    { imagePath = "assets/graphics/ui/title/option.png" },
+    { imagePath = "assets/graphics/ui/title/exit.png" },
+}
 
 -- ---- Intro (developer / engine) splash timeline ----
 local INTRO_PHASES = {
@@ -46,6 +50,11 @@ function titleScreen.load()
     titleImage = love.graphics.newImage(titlePath)
     bgImage:setFilter("nearest", "nearest")
     titleImage:setFilter("nearest", "nearest")
+
+    for _, option in ipairs(options) do
+        option.image = love.graphics.newImage(option.imagePath)
+        option.image:setFilter("nearest", "nearest")
+    end
 end
 
 -- Skip the intro outright (the developer/engine splash is skippable).
@@ -119,30 +128,37 @@ end
 -- SECOND PART - the actual title screen (main menu).
 function titleScreen.title_splash(canvasWidth, canvasHeight)
     render.drawImage(bgImage, 0, 0, 1)
-    -- Keep the 50% dark overlay introduced during the intro, as a layer below the title.
-    render.fill(0, 0, 0, 0.5)
     render.drawImage(titleImage, 0, 0, 1)
 
     for index, option in ipairs(options) do
-        local y = 190 + (index - 1) * 20
+        local y = 182 + (index - 1) * 58
         local isSelected = index == selectedOption
-        local textWidth = text.getWidth(option)
-        local textX = canvasWidth / 2 - textWidth / 2
+        local scale = 1
+        local rotation = 0
 
         if isSelected then
-            love.graphics.setColor(0.78, 0.82, 0.90)
-            love.graphics.polygon("fill", 280, y + 3, 280, y + 15, 287, y + 9)
-        else
-            love.graphics.setColor(0.5, 0.55, 0.65)
+            local time = love.timer.getTime()
+            scale = 1.04 + math.sin(time * 6) * 0.035
+            rotation = math.sin(time * 5) * 0.055
         end
 
-        text.print(option, textX, y)
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(
+            option.image,
+            canvasWidth / 2,
+            y,
+            rotation,
+            scale,
+            scale,
+            option.image:getWidth() / 2,
+            option.image:getHeight() / 2
+        )
     end
 
     love.graphics.setColor(1, 1, 1, 1)
     text.print(
         "CONTROLS: Use arrow keys to navigate, ENTER to select, Z to confirm, X to cancel, C for functions.",
-        30, canvasHeight - 30, 10
+        30, canvasHeight - 18, 10
     )
 end
 
@@ -159,7 +175,7 @@ function titleScreen.keypressed(key)
             selectedOption = 1
         end
     elseif key == "return" or key == "space" then
-        return selectedOption == 1 and "intro" or "exit"
+        return selectedOption == 1 and "gameplay" or "exit"
     end
 end
 
