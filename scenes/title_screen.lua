@@ -155,7 +155,7 @@ function titleScreen.title_splash(canvasWidth, canvasHeight)
         )
     end
 
-    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.setColor(0, 0, 0, 1)
     text.print(
         "CONTROLS: Use arrow keys to navigate, ENTER to select, Z to confirm, X to cancel, C for functions.",
         30, canvasHeight - 18, 10

@@ -117,6 +117,28 @@ function physics.resolveBodyCollision(a, b, restitution)
 
     local dx = b.x - a.x
     local dy = b.y - a.y
+    local player, platform
+    if a.isPlayer and not b.isPlayer then
+        player, platform = a, b
+    elseif b.isPlayer and not a.isPlayer then
+        player, platform = b, a
+    end
+
+    -- Props act as one-way platforms for the player. On descent, resolve only
+    -- the player's vertical position so walking across a box top cannot push
+    -- the supporting box or its neighboring stack sideways.
+    local previousPlayerBottom = player and (player.prevY or player.y) + player.h / 2
+    local playerBottom = player and player.y + player.h / 2
+    local platformTop = platform and platform.y - platform.h / 2
+    if player and player.vy >= platform.vy
+        and previousPlayerBottom <= platformTop
+        and playerBottom >= platformTop then
+        player.y = platformTop - player.h / 2
+        player.vy = math.min(player.vy, platform.vy)
+        player.onGround = true
+        return true
+    end
+
     local overlapX = (a.w + b.w) / 2 - math.abs(dx)
     local overlapY = (a.h + b.h) / 2 - math.abs(dy)
     if overlapX <= 0 or overlapY <= 0 then
@@ -196,7 +218,9 @@ end
 -- Resolve every dynamic body pair once. Held bodies are ignored by the
 -- resolver because the player owns their position while carrying them.
 function physics.resolveBodyCollisions(bodies, solids, restitution, iterations)
-    iterations = iterations or 4
+    -- Dense box clusters need more than a few passes for contact corrections
+    -- to propagate through the whole stack instead of depending on pair order.
+    iterations = iterations or 8
     for _ = 1, iterations do
         for i = 1, #bodies - 1 do
             for j = i + 1, #bodies do

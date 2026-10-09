@@ -55,6 +55,7 @@ local function buildLevel()
 end
 
 function gameplay.load()
+    playerModule.load()
     boxEntity.load()
     buildLevel()
 end
@@ -73,6 +74,7 @@ function gameplay.update(delta)
         bodies[#bodies + 1] = prop
     end
     physics.resolveBodyCollisions(bodies, world.solids)
+    player:refreshAnimationState()
 end
 
 function gameplay.keypressed(key)

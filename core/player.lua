@@ -7,6 +7,13 @@ local physics = require("core.physics")
 
 local player = {}
 
+local SPRITE_PATH = "assets/graphics/entities/kusogaki.png"
+local SPRITE_FRAME_SIZE = 32
+local ANIMATION_FRAME_DURATION = 0.2
+local KICK_ANIMATION_DURATION = ANIMATION_FRAME_DURATION * 2
+local LONG_IDLE_DELAY = 5
+local spriteSheet
+
 player.KEYS = {
     left  = "left",
     right = "right",
@@ -37,14 +44,20 @@ player.CONFIG = {
     grabRange      = 30,   -- size of the grab search box
 }
 
--- Placeholder palette (swap for sprites when art lands).
-local STATE_COLORS = {
-    idle = { 0.36, 0.62, 0.89 },
-    run  = { 0.32, 0.57, 0.86 },
-    rise = { 0.47, 0.71, 0.96 },
-    fall = { 0.30, 0.52, 0.80 },
-    kick = { 0.95, 0.76, 0.32 },
-}
+function player.load()
+    spriteSheet = love.graphics.newImage(SPRITE_PATH)
+    spriteSheet:setFilter("nearest", "nearest")
+end
+
+local function getSpriteQuad(column, row)
+    return love.graphics.newQuad(
+        (column - 1) * SPRITE_FRAME_SIZE,
+        (row - 1) * SPRITE_FRAME_SIZE,
+        SPRITE_FRAME_SIZE,
+        SPRITE_FRAME_SIZE,
+        spriteSheet:getDimensions()
+    )
+end
 
 -- Create a player at the given center position.
 function player.new(x, y)
@@ -57,6 +70,10 @@ function player.new(x, y)
     self.facing = 1
     self.onGround = false
     self.state = "idle"
+    self.animationTime = 0
+    self.idleTime = 0
+    self.kickAnimationTime = nil
+    self.deadAnimationTime = nil
     self.carrying = nil   -- prop currently held (C)
     self.hovered = nil    -- grabbable prop highlighted in front of the player
     self.coyote = 0
@@ -68,6 +85,11 @@ function player.new(x, y)
     self.input = nil      -- optional { isDown = function(key) } adapter (tests)
     self.onEvent = nil    -- optional callback(name, player) for scene feedback
     return self
+end
+
+-- Play the single-frame death pose for one animation interval.
+function player:playDead()
+    self.deadAnimationTime = ANIMATION_FRAME_DURATION
 end
 
 -- Read a key through the injected adapter, falling back to the real keyboard.
@@ -129,7 +151,7 @@ local function attachCarried(self)
         return
     end
     prop.x = self.x + self.facing * (self.w / 2 + prop.w / 2 - 2)
-    prop.y = self.y - 6
+    prop.y = self.y
     prop.vx, prop.vy = 0, 0
 end
 
@@ -144,7 +166,23 @@ local function releaseCarried(self, vx, vy)
     self.carrying = nil
 end
 
+-- Reconcile the displayed movement state after dynamic-body collisions run.
+function player:refreshAnimationState()
+    local moving = math.abs(self.vx) > 10
+    if self.kickTime > 0 or (self.kickAnimationTime and self.onGround and not moving) then
+        self.state = "kick"
+    elseif not self.onGround then
+        self.state = self.vy < 0 and "rise" or "fall"
+    elseif moving then
+        self.state = "run"
+    else
+        self.state = "idle"
+    end
+end
+
 function player:update(delta, world)
+
+    self.prevY = self.y
     local cfg = player.CONFIG
     local keys = player.KEYS
     delta = math.min(delta, 1 / 30) -- clamp long frames to avoid tunneling
@@ -167,6 +205,18 @@ function player:update(delta, world)
     self.jumpBuffer = math.max(0, self.jumpBuffer - delta)
     self.kickCooldown = math.max(0, self.kickCooldown - delta)
     self.kickTime = math.max(0, self.kickTime - delta)
+    if self.kickAnimationTime then
+        self.kickAnimationTime = self.kickAnimationTime + delta
+        if self.kickAnimationTime >= KICK_ANIMATION_DURATION then
+            self.kickAnimationTime = nil
+        end
+    end
+    if self.deadAnimationTime then
+        self.deadAnimationTime = math.max(0, self.deadAnimationTime - delta)
+        if self.deadAnimationTime == 0 then
+            self.deadAnimationTime = nil
+        end
+    end
 
     -- Horizontal movement (arrows) ----------------------------------------
     local move = 0
@@ -216,6 +266,8 @@ function player:update(delta, world)
     if kickPressed and self.kickCooldown <= 0 then
         self.kickCooldown = cfg.kickCooldown
         self.kickTime = cfg.kickDuration
+        self.kickAnimationTime = 0
+        self.idleTime = 0
         self.kickHits = {}
         if self.carrying then
             local thrown = self.carrying
@@ -261,21 +313,24 @@ function player:update(delta, world)
     self.hovered = not self.carrying and findGrabbable(self, world) or nil
 
     -- Animation state -------------------------------------------------------
-    if self.kickTime > 0 then
-        self.state = "kick"
-    elseif not self.onGround then
-        self.state = self.vy < 0 and "rise" or "fall"
-    elseif math.abs(self.vx) > 10 then
-        self.state = "run"
+    local moving = math.abs(self.vx) > 10
+    self:refreshAnimationState()
+
+    if self.onGround and not moving then
+        self.idleTime = self.idleTime + delta
     else
-        self.state = "idle"
+        self.idleTime = 0
+    end
+
+    if self.state == "run"
+        or (self.state == "idle" and self.idleTime >= LONG_IDLE_DELAY) then
+        self.animationTime = self.animationTime + delta
+    else
+        self.animationTime = 0
     end
 end
 
--- Placeholder rendering: solid body, facing eye, kick leg and hitbox hint.
 function player:draw()
-    local left, top = self.x - self.w / 2, self.y - self.h / 2
-
     -- Highlight a grabbable prop (C hold preview)
     if self.hovered then
         local p = self.hovered
@@ -291,20 +346,46 @@ function player:draw()
         love.graphics.rectangle("fill", kb.x - kb.w / 2, kb.y - kb.h / 2, kb.w, kb.h)
     end
 
-    -- Body
-    love.graphics.setColor(STATE_COLORS[self.state] or STATE_COLORS.idle)
-    love.graphics.rectangle("fill", left, top, self.w, self.h)
-
-    -- Facing eye
-    love.graphics.setColor(1, 1, 1, 0.95)
-    love.graphics.rectangle("fill", self.x + self.facing * 4 - 1.5, top + 6, 3, 4)
-
-    -- Kick leg extension
-    if self.kickTime > 0 then
-        love.graphics.setColor(0.95, 0.76, 0.32)
-        local legX = self.facing > 0 and (self.x + self.w / 2) or (self.x - self.w / 2 - 12)
-        love.graphics.rectangle("fill", legX, self.y + self.h / 2 - 8, 12, 6)
+    if not spriteSheet then
+        player.load()
     end
+
+    local column, row = 1, 1
+    if self.deadAnimationTime then
+        column, row = 2, 3
+    elseif self.kickAnimationTime and self.state == "kick" then
+        row = 4
+        column = math.min(2, math.floor(self.kickAnimationTime / ANIMATION_FRAME_DURATION) + 1)
+    elseif self.state == "rise" or self.state == "fall" then
+        if self.carrying then
+            column, row = 4, 2
+        else
+            column, row = 1, 3
+        end
+    elseif self.state == "run" then
+        row = self.carrying and 2 or 1
+        column = (math.floor(self.animationTime / ANIMATION_FRAME_DURATION) % 3) + 2
+    elseif self.state == "idle" and self.carrying then
+        column, row = 1, 2
+    elseif self.state == "idle" and self.idleTime >= LONG_IDLE_DELAY then
+        row = 3
+        column = math.min(4, 3 + math.floor((self.idleTime - LONG_IDLE_DELAY) / ANIMATION_FRAME_DURATION))
+    end
+
+    local quad = getSpriteQuad(column, row)
+    local scaleX = self.facing < 0 and -1 or 1
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(
+        spriteSheet,
+        quad,
+        self.x,
+        self.y + self.h / 2 - SPRITE_FRAME_SIZE,
+        0,
+        scaleX,
+        1,
+        SPRITE_FRAME_SIZE / 2,
+        0
+    )
 end
 
 return player
