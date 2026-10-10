@@ -8,6 +8,10 @@ physics.maxFall = 420   -- terminal fall speed (px/s)
 physics.restitution = 0.35 -- bounciness for dynamic body collisions
 physics.restingSpeed = 70 -- vertical speed below this settles instead of bouncing
 physics.contactFriction = 0.35 -- tangential damping while resting on another body
+physics.axisBias = 1 -- px: the horizontal MTV axis must be this much shallower
+                     -- than the vertical one to win; near-ties resolve
+                     -- vertically so sub-pixel offsets cannot shear a stacked
+                     -- box sideways out of its stack
 
 -- Use collider/image area as mass. A larger image therefore carries more
 -- momentum and is harder to push around than a smaller one.
@@ -90,7 +94,7 @@ function physics.resolveBodyAgainstSolids(body, solids)
             local overlapX = (body.w + solid.w) / 2 - math.abs(dx)
             local overlapY = (body.h + solid.h) / 2 - math.abs(dy)
 
-            if overlapX < overlapY then
+            if overlapX < overlapY - physics.axisBias then
                 local direction = dx >= 0 and 1 or -1
                 body.x = body.x + direction * overlapX
                 body.vx = 0
@@ -106,11 +110,35 @@ function physics.resolveBodyAgainstSolids(body, solids)
     end
 end
 
+-- True when the position the player would be snapped to on top of a platform
+-- is not occupied by another body. On a vertically stacked pair the lower
+-- box's top plane lies inside the upper box; snapping the player there would
+-- wedge them between the boxes with onGround stuck true (standing on an
+-- "invisible" floor at the seam), so the snap must only fire on a free spot.
+local function landingIsClear(player, platform, platformTop, bodies)
+    if not bodies then
+        return true
+    end
+    local landing = {
+        x = player.x,
+        y = platformTop - player.h / 2,
+        w = player.w,
+        h = player.h,
+    }
+    for _, other in ipairs(bodies) do
+        if other ~= player and other ~= platform and not other.held
+            and physics.overlaps(landing, other) then
+            return false
+        end
+    end
+    return true
+end
+
 -- Resolve one dynamic AABB against another using minimum translation and a
 -- one-dimensional impulse along the shallowest penetration axis. Bodies may
 -- optionally provide a mass; otherwise their mass is derived from w * h.
 -- Static bodies are not moved and behave as infinite-mass objects.
-function physics.resolveBodyCollision(a, b, restitution)
+function physics.resolveBodyCollision(a, b, restitution, bodies)
     if a.held or b.held or not physics.overlaps(a, b) then
         return false
     end
@@ -132,7 +160,8 @@ function physics.resolveBodyCollision(a, b, restitution)
     local platformTop = platform and platform.y - platform.h / 2
     if player and player.vy >= platform.vy
         and previousPlayerBottom <= platformTop
-        and playerBottom >= platformTop then
+        and playerBottom >= platformTop
+        and landingIsClear(player, platform, platformTop, bodies) then
         player.y = platformTop - player.h / 2
         player.vy = math.min(player.vy, platform.vy)
         player.onGround = true
@@ -146,7 +175,16 @@ function physics.resolveBodyCollision(a, b, restitution)
     end
 
     local normalX, normalY, penetration
-    if overlapX < overlapY then
+    -- A vertical overlap spanning the smaller body's full height means the
+    -- contact is at a stack seam: resolve vertically even when the horizontal
+    -- axis is marginally shallower, otherwise a sub-pixel offset shears the
+    -- upper box sideways out of its stack. The override only applies while
+    -- the horizontal overlap is substantial (the bodies really are stacked);
+    -- an edge graze keeps its shallow horizontal ejection.
+    local minHeight, minWidth = math.min(a.h, b.h), math.min(a.w, b.w)
+    local horizontalWins = overlapX < overlapY - physics.axisBias
+        and (overlapY < minHeight or overlapX < minWidth / 2)
+    if horizontalWins then
         normalX = dx >= 0 and 1 or -1
         normalY = 0
         penetration = overlapX
@@ -165,9 +203,24 @@ function physics.resolveBodyCollision(a, b, restitution)
         return false
     end
 
+    -- Positional separation never lets a player's body displace a prop. The
+    -- one-way branch above already refuses to shove stacks sideways while
+    -- walking on them; applying the full correction to the player keeps box
+    -- stacks intact for side contacts too. Velocity transfer through the
+    -- impulse below is unaffected.
+    local separationA, separationB = inverseA, inverseB
+    if player then
+        if a.isPlayer then
+            separationB = 0
+        else
+            separationA = 0
+        end
+    end
+    local separationTotal = separationA + separationB
+
     -- Separate the bodies so they cannot remain interpenetrating.
-    local correctionA = penetration * inverseA / inverseMassTotal
-    local correctionB = penetration * inverseB / inverseMassTotal
+    local correctionA = penetration * separationA / separationTotal
+    local correctionB = penetration * separationB / separationTotal
     a.x = a.x - normalX * correctionA
     a.y = a.y - normalY * correctionA
     b.x = b.x + normalX * correctionB
@@ -209,9 +262,16 @@ function physics.resolveBodyCollision(a, b, restitution)
     end
 
     -- If b is below a, a is the body standing on top. If a is below b, b
-    -- is the body standing on top.
-    if normalY > 0 then a.onGround = true end
-    if normalY < 0 then b.onGround = true end
+    -- is the body standing on top. A player only counts as grounded when
+    -- their feet actually sit at the other body's top face; a contact in the
+    -- middle of the body (wedged against a stack seam) must not read as
+    -- standing, or the player can hover inside the stack.
+    if normalY > 0 and (not player or playerBottom <= platformTop + 0.5) then
+        a.onGround = true
+    end
+    if normalY < 0 then
+        b.onGround = true
+    end
     return true
 end
 
@@ -224,7 +284,7 @@ function physics.resolveBodyCollisions(bodies, solids, restitution, iterations)
     for _ = 1, iterations do
         for i = 1, #bodies - 1 do
             for j = i + 1, #bodies do
-                physics.resolveBodyCollision(bodies[i], bodies[j], restitution)
+                physics.resolveBodyCollision(bodies[i], bodies[j], restitution, bodies)
             end
         end
 
