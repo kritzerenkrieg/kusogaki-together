@@ -1,60 +1,50 @@
--- Carryable physics prop (potion, herb, crate...).
--- Center-based AABB body; while held, the player drives its transform and
--- physics is suspended (see player.attachCarried).
-local physics = require("core.physics")
+-- Base prop: a carryable physics body with ground friction and a placeholder
+-- draw. Hierarchy: Entity -> Prop -> concrete props (levels define these).
 local mathx = require("core.math")
+local Entity = require("core.entity")
 
-local prop = {}
+local Prop = setmetatable({}, { __index = Entity })
+Prop.__index = Prop
 
-prop.CONFIG = {
-    friction     = 900, -- ground friction while sliding (px/s^2)
-    restVelocity = 6,   -- snap to rest below this speed (px/s)
+Prop.CONFIG = {
+    friction = 900,
+    restVelocity = 6,
 }
 
--- Create a prop at the given center position with optional styling.
-function prop.new(x, y, options)
+function Prop.create(class, x, y, options)
     options = options or {}
-    local self = setmetatable({}, { __index = prop })
-    self.x, self.y = x or 0, y or 0
-    self.w = options.w or 16
-    self.h = options.h or 16
-    if options.image then
-        self.w = options.w or options.image:getWidth()
-        self.h = options.h or options.image:getHeight()
-    end
-    self.mass = physics.massFromSize(self.w, self.h, options.density)
-    self.vx, self.vy = 0, 0
-    self.onGround = false
-    self.held = false
-    self.label = options.label or "prop"
-    self.color = options.color or { 0.86, 0.52, 0.24 }
+    local self = Entity.new(class or Prop, x, y, options)
+    self.name = options.name or "prop"
     return self
 end
 
-function prop:update(delta, world)
-    if self.held then
-        return -- the player positions a held prop
-    end
+function Prop.new(x, y, options)
+    return Prop.create(Prop, x, y, options)
+end
 
-    delta = math.min(delta, 1 / 30)
-    self.vy = math.min(self.vy + physics.gravity * delta, physics.maxFall)
-    physics.moveBody(self, world.solids, delta)
+function Prop:update(delta, world)
+    Entity.update(self, delta, world)
+
+    if self.held then return end
 
     if self.onGround then
-        self.vx = mathx.approach(self.vx, 0, prop.CONFIG.friction * delta)
-        if math.abs(self.vx) < prop.CONFIG.restVelocity then
+        self.vx = mathx.approach(self.vx, 0, Prop.CONFIG.friction * delta)
+        if math.abs(self.vx) < Prop.CONFIG.restVelocity then
             self.vx = 0
         end
     end
 end
 
--- Placeholder rendering: solid rounded square with a light label stripe.
-function prop:draw()
+function Prop:draw()
+    if self.image then
+        Entity.draw(self)
+        return
+    end
+
+    -- Placeholder for a prop without a sprite.
     local left, top = self.x - self.w / 2, self.y - self.h / 2
-    love.graphics.setColor(self.color)
+    love.graphics.setColor(0.86, 0.52, 0.24)
     love.graphics.rectangle("fill", left, top, self.w, self.h, 3, 3)
-    love.graphics.setColor(1, 1, 1, 0.35)
-    love.graphics.rectangle("fill", left + 2, top + 2, self.w - 4, 3)
 end
 
-return prop
+return Prop

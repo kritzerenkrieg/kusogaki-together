@@ -1,5 +1,5 @@
--- Gameplay scene: hosts the platformer room, wires the player mechanic
--- (Z jump / X kick / C hold) and draws placeholder level art.
+-- Gameplay scene: loads a level, wires the player mechanic (Z jump / X kick /
+-- C hold) and runs the world update and HUD.
 local render = require("core.graphics.render")
 local physics = require("core.physics")
 local text = require("core.text")
@@ -7,42 +7,32 @@ local sceneEngine = require("core.scenes")
 local fx = require("core.graphics.fx")
 local camera = require("core.graphics.camera")
 local playerModule = require("core.player")
-local boxEntity = require("levels.example.entities.box")
+local levelLoader = require("core.level")
 
 local gameplay = {}
 
--- Level geometry: center-based rectangles --------------------------------
-local LEVEL_SOLID = {
-    { x = 320, y = 354, w = 656, h = 24, color = { 0.32, 0.27, 0.22 } }, -- ground
-    { x = -8,  y = 180, w = 16,  h = 400, color = { 0.22, 0.28, 0.38 }, wall = true },
-    { x = 648, y = 180, w = 16,  h = 400, color = { 0.22, 0.28, 0.38 }, wall = true },
-    { x = 150, y = 291, w = 96,  h = 12, color = { 0.55, 0.58, 0.66 } }, -- platform A
-    { x = 310, y = 246, w = 112, h = 12, color = { 0.55, 0.58, 0.66 } }, -- platform B
-    { x = 470, y = 291, w = 96,  h = 12, color = { 0.55, 0.58, 0.66 } }, -- platform C
-    { x = 585, y = 232, w = 76,  h = 12, color = { 0.55, 0.58, 0.66 } }, -- ledge
-}
+local LEVEL_NAME = "example"
+local HAZARD_TOUCH = 1 -- px around a hazard that still counts as touching it
 
-local LEVEL_PROPS = {
-    { x = 150, y = 277, label = "salt",    color = { 0.42, 0.72, 0.85 } },
-    { x = 205, y = 334, label = "potion",  color = { 0.86, 0.52, 0.24 } },
-    { x = 300, y = 232, label = "reagent", color = { 0.72, 0.50, 0.86 } },
-    { x = 430, y = 334, label = "herb",    color = { 0.55, 0.78, 0.35 } },
-    { x = 575, y = 334, label = "bloom",   color = { 0.88, 0.45, 0.62 } },
-}
-
-local world = { solids = LEVEL_SOLID, props = {} }
+local level
+local world = { solids = {}, props = {}, hazards = {} }
 local player
 
 local function buildLevel()
-    world.props = {}
-    for _, def in ipairs(LEVEL_PROPS) do
-        world.props[#world.props + 1] = boxEntity.new(def.x, def.y, {
-            label = def.label,
-            color = def.color,
-        })
-    end
+    level = levelLoader.load(LEVEL_NAME)
 
-    player = playerModule.new(70, 300)
+    -- Hazards are solid: props and the player collide with them like any body.
+    world.solids = {}
+    for _, solid in ipairs(level.solids) do
+        world.solids[#world.solids + 1] = solid
+    end
+    for _, hazard in ipairs(level.hazards) do
+        world.solids[#world.solids + 1] = hazard
+    end
+    world.hazards = level.hazards
+    world.props = level.props
+
+    player = playerModule.new(level.spawn.x, level.spawn.y)
     player.onEvent = function(name)
         if name == "kickHit" then
             camera.shake(0.15, 6)
@@ -56,7 +46,6 @@ end
 
 function gameplay.load()
     playerModule.load()
-    boxEntity.load()
     buildLevel()
 end
 
@@ -66,10 +55,27 @@ function gameplay.update(delta)
         prop:update(delta, world)
     end
 
+    -- Hazards are solid, so the player stops flush against them. Test a box
+    -- grown by HAZARD_TOUCH px so flush contact counts as touching.
+    for _, hazard in ipairs(world.hazards) do
+        local touch = {
+            x = hazard.x,
+            y = hazard.y,
+            w = hazard.w + HAZARD_TOUCH * 2,
+            h = hazard.h + HAZARD_TOUCH * 2,
+        }
+        if physics.overlaps(player, touch) then
+            hazard:onTouch(player)
+        end
+    end
+
     -- All dynamic objects collide with one another after their individual
     -- movement. Their mass comes from collider/image area, so larger objects
-    -- transfer more momentum into smaller objects.
-    local bodies = { player }
+    -- transfer more momentum into smaller objects. A dead player has no collision.
+    local bodies = {}
+    if not player.dead then
+        bodies[1] = player
+    end
     for _, prop in ipairs(world.props) do
         bodies[#bodies + 1] = prop
     end
@@ -85,27 +91,6 @@ function gameplay.keypressed(key)
     end
 end
 
-local function drawBackground()
-    -- Sky
-    love.graphics.setColor(0.44, 0.62, 0.83)
-    love.graphics.rectangle("fill", 0, 0, render.width, render.height)
-    -- Distant hall band
-    love.graphics.setColor(0.38, 0.53, 0.70)
-    love.graphics.rectangle("fill", 0, 200, render.width, 142)
-end
-
-local function drawSolids()
-    for _, solid in ipairs(world.solids) do
-        local left, top = solid.x - solid.w / 2, solid.y - solid.h / 2
-        love.graphics.setColor(solid.color)
-        love.graphics.rectangle("fill", left, top, solid.w, solid.h)
-        if not solid.wall then
-            love.graphics.setColor(1, 1, 1, 0.12)
-            love.graphics.rectangle("fill", left, top, solid.w, 3)
-        end
-    end
-end
-
 local function drawHud()
     love.graphics.setColor(0, 0, 0, 0.45)
     love.graphics.rectangle("fill", 0, render.height - 26, render.width, 26)
@@ -116,14 +101,13 @@ local function drawHud()
         8, render.height - 20, 10
     )
 
-    local carry = player.carrying and player.carrying.label or "-"
+    local carry = player.carrying and player.carrying.name or "-"
     love.graphics.setColor(1, 1, 1, 0.85)
     text.print(("STATE: %s   CARRY: %s"):format(player.state, carry), 8, 8, 10)
 end
 
 function gameplay.draw()
-    drawBackground()
-    drawSolids()
+    levelLoader.draw(level)
     for _, prop in ipairs(world.props) do
         prop:draw()
     end

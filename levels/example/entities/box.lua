@@ -1,13 +1,12 @@
--- Concrete example prop: the named "box" entity.
--- The type identity and its asset are intentionally defined together here.
-local Entity = require("levels.example.entities.entity")
-local Prop = require("levels.example.entities.prop")
-
+-- Entity type script: "box", a carryable prop. Runs in the sandbox; the base
+-- classes Entity and Prop are injected by core/level.lua.
 local Box = setmetatable({}, { __index = Prop })
 Box.__index = Box
 
 Box.name = "box"
+Box.kind = "prop" -- "prop": dynamic body; "hazard": static solid that hurts
 Box.assetPath = "levels/example/assets/box.png"
+Box.w, Box.h = 16, 16 -- collision size (px), owned by the type
 Box.image = nil
 
 function Box.load()
@@ -17,11 +16,13 @@ function Box.load()
     return Box.image
 end
 
-function Box.new(x, y, options)
-    options = options or {}
-    options.name = Box.name
-    options.image = options.image or Box.image
-    return Prop.create(Box, x, y, options)
+function Box.new(x, y)
+    return Prop.create(Box, x, y, {
+        name = Box.name,
+        image = Box.image,
+        w = Box.w,
+        h = Box.h,
+    })
 end
 
 return Box
