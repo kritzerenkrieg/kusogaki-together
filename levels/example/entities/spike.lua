@@ -1,5 +1,5 @@
 -- Entity type script: "spike", a static hazard. Runs in the sandbox; the base
--- class Entity is injected by core/level.lua.
+-- class Entity is injected by core/level/loader.lua.
 local Spike = setmetatable({}, { __index = Entity })
 Spike.__index = Spike
 

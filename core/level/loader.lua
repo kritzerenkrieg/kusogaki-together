@@ -2,11 +2,10 @@
 -- (levels/<name>/entities/<type>.lua) in the sandbox, and builds level data.
 local json = require("core.json")
 local script = require("core.script")
-local render = require("core.graphics.render")
-local Entity = require("core.entity")
-local Prop = require("core.prop")
+local Entity = require("core.level.entity")
+local Prop = require("core.level.prop")
 
-local level = {}
+local loader = {}
 
 local FORMAT = 1
 
@@ -29,8 +28,8 @@ local function loadType(levelName, typeName, types)
 end
 
 -- Load and build the level named `name`. Returns plain level data:
--- { name, spawn, background, statics, hazards, props }.
-function level.load(name)
+-- { name, spawn, background, statics, hazards, blocks, enemies, props }.
+function loader.load(name)
     checkName("level", name, "level")
     local path = ("levels/%s/level.json"):format(name)
     local text = love.filesystem.read(path)
@@ -43,13 +42,17 @@ function level.load(name)
     end
 
     local types = {}
-    local hazards, props = {}, {}
+    local hazards, blocks, enemies, props = {}, {}, {}, {}
     for _, def in ipairs(data.entities or {}) do
         checkName("entity type", def.type, path)
         local Type = loadType(name, def.type, types)
         local entity = Type.new(def.x, def.y)
         if Type.kind == "hazard" then
             hazards[#hazards + 1] = entity
+        elseif Type.kind == "block" then
+            blocks[#blocks + 1] = entity
+        elseif Type.kind == "enemy" then
+            enemies[#enemies + 1] = entity
         elseif Type.kind == "prop" then
             props[#props + 1] = entity
         else
@@ -63,31 +66,10 @@ function level.load(name)
         background = data.background,
         statics = data.static or {},
         hazards = hazards,
+        blocks = blocks,
+        enemies = enemies,
         props = props,
     }
 end
 
--- Draw the static level art: background, statics and hazards.
-function level.draw(lvl)
-    local bg = lvl.background
-    love.graphics.setColor(bg.sky)
-    love.graphics.rectangle("fill", 0, 0, render.width, render.height)
-    love.graphics.setColor(bg.band.color)
-    love.graphics.rectangle("fill", 0, bg.band.y, render.width, bg.band.h)
-
-    for _, static in ipairs(lvl.statics) do
-        local left, top = static.x - static.w / 2, static.y - static.h / 2
-        love.graphics.setColor(static.color)
-        love.graphics.rectangle("fill", left, top, static.w, static.h)
-        if not static.wall then
-            love.graphics.setColor(1, 1, 1, 0.12)
-            love.graphics.rectangle("fill", left, top, static.w, 3)
-        end
-    end
-
-    for _, hazard in ipairs(lvl.hazards) do
-        hazard:draw()
-    end
-end
-
-return level
+return loader

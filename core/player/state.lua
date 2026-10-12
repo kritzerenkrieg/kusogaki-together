@@ -9,6 +9,7 @@ local state = {}
 -- Set the initial fields. Position and size must already be set on `self`.
 function state.init(self)
     self.onGround = false
+    self.jumping = false  -- true from a jump until the next landing
     self.state = "idle"
     self.animationTime = 0
     self.idleTime = 0
@@ -22,6 +23,7 @@ function state.init(self)
     self.jumpBuffer = 0
     self.kickTime = 0
     self.kickCooldown = 0
+    self.kickGrace = 0    -- time left when enemy touches cannot kill (s)
     self.kickHits = {}    -- props already hit by the current kick
     self.prevKeys = { jump = false, kick = false, hold = false }
 end
@@ -38,6 +40,7 @@ function state.tick(self, delta)
     self.coyote = math.max(0, self.coyote - delta)
     self.jumpBuffer = math.max(0, self.jumpBuffer - delta)
     self.kickCooldown = math.max(0, self.kickCooldown - delta)
+    self.kickGrace = math.max(0, self.kickGrace - delta)
     self.kickTime = math.max(0, self.kickTime - delta)
     if self.kickAnimationTime then
         self.kickAnimationTime = self.kickAnimationTime + delta
@@ -74,6 +77,7 @@ function state.respawn(self)
     self.vx, self.vy = 0, 0
     self.facing = 1
     self.onGround = false
+    self.jumping = false
     state.emit(self, "respawn")
 end
 

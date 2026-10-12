@@ -105,6 +105,46 @@ function collision.resolveBodyCollision(a, b, restitution, bodies, statics)
     return true
 end
 
+-- Move `mover` out of `fixed`; `fixed` never moves. See ARCHITECTURE.md
+-- (Physics rules: push-out). Returns false when nothing moved.
+function collision.pushOut(mover, fixed, statics)
+    if not geometry.overlaps(mover, fixed) then
+        return false
+    end
+    local side = mover.x >= fixed.x and 1 or -1
+    local sideX = fixed.x + side * (fixed.w + mover.w) / 2
+    local otherX = fixed.x - side * (fixed.w + mover.w) / 2
+    local topY = fixed.y - (fixed.h + mover.h) / 2
+    local exits
+    if geometry.pushesHorizontally(mover, fixed) then
+        exits = {
+            { x = sideX, y = mover.y, axis = "x" },
+            { x = mover.x, y = topY, axis = "y" },
+            { x = otherX, y = mover.y, axis = "x" },
+        }
+    else
+        exits = {
+            { x = mover.x, y = topY, axis = "y" },
+            { x = sideX, y = mover.y, axis = "x" },
+            { x = otherX, y = mover.y, axis = "x" },
+        }
+    end
+    for _, exit in ipairs(exits) do
+        local probe = { x = exit.x, y = exit.y, w = mover.w, h = mover.h }
+        if not (statics and geometry.overlapsAny(probe, statics)) then
+            mover.x, mover.y = exit.x, exit.y
+            if exit.axis == "y" then
+                mover.vy = math.min(mover.vy, fixed.vy or 0)
+                mover.onGround = true
+            elseif (exit.x - fixed.x) * (mover.vx - (fixed.vx or 0)) < 0 then
+                mover.vx = fixed.vx or 0
+            end
+            return true
+        end
+    end
+    return false
+end
+
 -- Resolve every dynamic body pair once, then settle against statics.
 function collision.resolveBodyCollisions(bodies, statics, restitution, iterations)
     -- Dense box clusters need more than a few passes for contact corrections

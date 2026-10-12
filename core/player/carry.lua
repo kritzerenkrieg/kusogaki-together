@@ -19,16 +19,18 @@ function carry.grabBox(self)
     }
 end
 
--- Nearest loose prop overlapping the grab box, or nil.
-local function findGrabbable(self, world)
+-- Nearest loose prop or live enemy overlapping the grab box, or nil.
+local function findGrabbable(self, level)
     local box = carry.grabBox(self)
     local best, bestDist = nil, math.huge
-    for _, prop in ipairs(world.props) do
-        if not prop.held and physics.overlaps(box, prop) then
-            local dx, dy = prop.x - self.x, prop.y - self.y
-            local dist = dx * dx + dy * dy
-            if dist < bestDist then
-                best, bestDist = prop, dist
+    for _, list in ipairs({ level.props, level.enemies }) do
+        for _, prop in ipairs(list) do
+            if not prop.held and not prop.killedBy and physics.overlaps(box, prop) then
+                local dx, dy = prop.x - self.x, prop.y - self.y
+                local dist = dx * dx + dy * dy
+                if dist < bestDist then
+                    best, bestDist = prop, dist
+                end
             end
         end
     end
@@ -74,9 +76,9 @@ local function release(self, vx, vy, statics)
 end
 
 -- Grab on press (when not carrying) and drop on release.
-function carry.update(self, edges, world)
+function carry.update(self, edges, level)
     if edges.holdPressed and not self.carrying then
-        local target = findGrabbable(self, world)
+        local target = findGrabbable(self, level)
         if target then
             self.carrying = target
             target.held = true
@@ -85,7 +87,7 @@ function carry.update(self, edges, world)
         end
     end
     if edges.holdReleased and self.carrying then
-        release(self, self.facing * 30, 0, world.statics) -- gentle drop
+        release(self, self.facing * 30, 0, level.statics) -- gentle drop
         state.emit(self, "drop")
     end
 end
@@ -106,11 +108,12 @@ function carry.attach(self)
     local box = carriedBox(self, self.x, self.y, HAND_OVERLAP)
     prop.x, prop.y = box.x, box.y
     prop.vx, prop.vy = 0, 0
+    prop.facing = self.facing -- a held enemy turns with the player
 end
 
 -- Prop to highlight as a grab hint, or nil.
-function carry.hover(self, world)
-    return not self.carrying and findGrabbable(self, world) or nil
+function carry.hover(self, level)
+    return not self.carrying and findGrabbable(self, level) or nil
 end
 
 return carry

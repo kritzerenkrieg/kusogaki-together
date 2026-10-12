@@ -1,6 +1,6 @@
 function love.conf(settings)
-    settings.identity = "our-beloved-alchemy-guild"
-    settings.window.title = "Our Beloved Alchemy Guild"
+    settings.identity = "kusogaki-together"
+    settings.window.title = "Kusogaki Together"
     settings.window.width = 640
     settings.window.height = 360
     settings.window.fullscreen = true

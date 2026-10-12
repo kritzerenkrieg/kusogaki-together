@@ -1,46 +1,25 @@
--- Gameplay scene: loads a level, wires the player mechanic (Z jump / X kick /
--- C hold) and runs the world update and HUD.
-local render = require("core.graphics.render")
-local physics = require("core.physics")
-local text = require("core.text")
+-- Gameplay scene: loads a level and a player, and runs them.
 local sceneEngine = require("core.scenes")
 local fx = require("core.graphics.fx")
-local camera = require("core.graphics.camera")
+local hud = require("core.graphics.hud")
 local playerModule = require("core.player")
-local levelLoader = require("core.level")
+local feedback = require("core.player.feedback")
+local Level = require("core.level")
+local audio = require("core.audio")
 
 local gameplay = {}
 
 local LEVEL_NAME = "example"
 
 local level
-local world = { statics = {}, props = {}, hazards = {} }
 local player
 
 local function buildLevel()
-    level = levelLoader.load(LEVEL_NAME)
-
-    -- Hazards are static: props and the player collide with them like any body.
-    world.statics = {}
-    for _, static in ipairs(level.statics) do
-        world.statics[#world.statics + 1] = static
-    end
-    for _, hazard in ipairs(level.hazards) do
-        world.statics[#world.statics + 1] = hazard
-    end
-    world.hazards = level.hazards
-    world.props = level.props
+    level = Level.load(LEVEL_NAME)
+    fx.clearEffects()
 
     player = playerModule.new(level.spawn.x, level.spawn.y)
-    player.onEvent = function(name)
-        if name == "kickHit" then
-            camera.shake(0.15, 6)
-        elseif name == "kick" or name == "throw" then
-            camera.shake(0.12, 4)
-        elseif name == "land" then
-            camera.shake(0.08, 2)
-        end
-    end
+    player.onEvent = feedback.onEvent
 end
 
 function gameplay.load()
@@ -49,31 +28,7 @@ function gameplay.load()
 end
 
 function gameplay.update(delta)
-    player:update(delta, world)
-    for _, prop in ipairs(world.props) do
-        prop:update(delta, world)
-    end
-
-    -- All dynamic objects collide with one another after their individual
-    -- movement. Their mass comes from collider/image area, so larger objects
-    -- transfer more momentum into smaller objects. A dead player has no collision.
-    local bodies = {}
-    if not player.dead then
-        bodies[1] = player
-    end
-    for _, prop in ipairs(world.props) do
-        bodies[#bodies + 1] = prop
-    end
-    physics.resolveBodyCollisions(bodies, world.statics)
-
-    -- A hazard hurts only when the player's physics actually touched it this
-    -- frame (player.contacts is set by the physics), so there is no separate zone.
-    for _, hazard in ipairs(world.hazards) do
-        if not player.dead and player.contacts and player.contacts[hazard] then
-            hazard:onTouch(player)
-        end
-    end
-    player:refreshAnimationState()
+    level:update(delta, player)
 end
 
 function gameplay.keypressed(key)
@@ -84,28 +39,12 @@ function gameplay.keypressed(key)
     end
 end
 
-local function drawHud()
-    love.graphics.setColor(0, 0, 0, 0.45)
-    love.graphics.rectangle("fill", 0, render.height - 26, render.width, 26)
-
-    love.graphics.setColor(0.92, 0.94, 0.98, 1)
-    text.print(
-        "ARROWS move   Z jump   X kick / throw   C hold (grab & carry)   ESC menu   R restart",
-        8, render.height - 20, 10
-    )
-
-    local carry = player.carrying and player.carrying.name or "-"
-    love.graphics.setColor(1, 1, 1, 0.85)
-    text.print(("STATE: %s   CARRY: %s"):format(player.state, carry), 8, 8, 10)
-end
-
 function gameplay.draw()
-    levelLoader.draw(level)
-    for _, prop in ipairs(world.props) do
-        prop:draw()
-    end
+    level:draw()
+    fx.drawDebris()
+    fx.drawCorpses()
     player:draw()
-    drawHud()
+    hud.draw(player)
 end
 
 -- Exposed for automated smoke tests and debugging.
@@ -114,6 +53,9 @@ function gameplay.getPlayer()
 end
 
 sceneEngine.register("gameplay", {
+    enter = function()
+        audio.playMusic("playground.wav")
+    end,
     update = gameplay.update,
     keypressed = gameplay.keypressed,
     draw = gameplay.draw,

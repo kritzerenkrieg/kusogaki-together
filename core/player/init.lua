@@ -35,6 +35,11 @@ function player:die()
     state.die(self)
 end
 
+-- Bounce up off an enemy: a full jump without needing the jump key.
+function player:bounce()
+    controller.bounce(self)
+end
+
 function player:respawn()
     state.respawn(self)
 end
@@ -44,7 +49,7 @@ function player:refreshAnimationState()
     state.refresh(self)
 end
 
-function player:update(delta, world)
+function player:update(delta, level)
     self.prevY = self.y
     delta = math.min(delta, 1 / 30) -- clamp long frames to avoid tunneling
     -- Contacts describe this frame only. Clear them before any early return, so
@@ -61,24 +66,29 @@ function player:update(delta, world)
     state.tick(self, delta)
     controller.horizontal(self, delta)
     controller.jump(self, edges)
-    carry.update(self, edges, world)
-    controller.kickStart(self, edges, world)
+    carry.update(self, edges, level)
+    controller.kickStart(self, edges, level)
 
-    -- Gravity + world collision
+    -- Gravity + level collision
     self.vy = math.min(self.vy + physics.gravity * delta, physics.maxFall)
     local wasGrounded = self.onGround
     local fallSpeed = self.vy
-    physics.moveBody(self, world.statics, delta)
+    -- A jump that is still rising; blocks it bumps from below may break. Kicks
+    -- and other pushes can also give upward speed, so they do not count.
+    self.movingUp = self.jumping and self.vy < 0
+    self.falling = self.vy > 0 -- coming down this frame; can stomp an enemy
+    physics.moveBody(self, level.statics, delta)
     if self.onGround then
+        self.jumping = false
         self.coyote = CONFIG.coyoteTime
         if not wasGrounded and fallSpeed > 260 then
             state.emit(self, "land")
         end
     end
 
-    controller.kickHits(self, world)
+    controller.kickHits(self, level)
     carry.attach(self)
-    self.hovered = carry.hover(self, world)
+    self.hovered = carry.hover(self, level)
     state.animate(self, delta)
 end
 

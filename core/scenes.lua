@@ -7,9 +7,14 @@ function sceneEngine.register(name, scene)
     sceneEngine.scenes[name] = scene
 end
 
+-- Make `name` the active scene. A scene may define enter(), called on entry.
 function sceneEngine.start(name)
-    if name and sceneEngine.scenes[name] then
+    local scene = name and sceneEngine.scenes[name]
+    if scene then
         sceneEngine.current = name
+        if scene.enter then
+            scene.enter()
+        end
     end
 end
 

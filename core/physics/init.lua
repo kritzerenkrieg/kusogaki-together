@@ -37,5 +37,6 @@ physics.resolveBodyAgainstStatics = staticContact.resolveBodyAgainstStatics
 
 physics.resolveBodyCollision = collision.resolveBodyCollision
 physics.resolveBodyCollisions = collision.resolveBodyCollisions
+physics.pushOut = collision.pushOut
 
 return physics

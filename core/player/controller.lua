@@ -57,6 +57,7 @@ function controller.jump(self, edges)
     if self.jumpBuffer > 0 and (self.onGround or self.coyote > 0) then
         self.vy = CONFIG.jumpVelocity
         self.onGround = false
+        self.jumping = true
         self.coyote = 0
         self.jumpBuffer = 0
         state.emit(self, "jump")
@@ -67,23 +68,33 @@ function controller.jump(self, edges)
 end
 
 -- Start a kick, or throw the carried prop instead.
-function controller.kickStart(self, edges, world)
+function controller.kickStart(self, edges, level)
     if not (edges.kickPressed and self.kickCooldown <= 0) then
         return
     end
     self.kickCooldown = CONFIG.kickCooldown
+    self.kickGrace = CONFIG.kickGrace
     self.kickTime = CONFIG.kickDuration
     self.kickAnimationTime = 0
     self.idleTime = 0
     self.kickHits = {}
     if self.carrying then
         local thrown = carry.throw(self,
-            self.facing * CONFIG.throwSpeed + self.vx * 0.5, CONFIG.throwArc, world.statics)
+            self.facing * CONFIG.throwSpeed + self.vx * 0.5, CONFIG.throwArc, level.statics)
         self.kickHits[thrown] = true -- never kick the prop we just threw
         state.emit(self, "throw")
     else
         state.emit(self, "kick")
     end
+end
+
+-- Launch the player upward as a full jump (used after stomping an enemy).
+function controller.bounce(self)
+    self.vy = CONFIG.jumpVelocity
+    self.onGround = false
+    self.jumping = true
+    self.coyote = 0
+    state.emit(self, "stomp")
 end
 
 -- Kick hitbox in front of the player (only meaningful while kickTime > 0).
@@ -96,19 +107,36 @@ function controller.kickBox(self)
     }
 end
 
--- Push props that the active kick hitbox overlaps, once per kick.
-function controller.kickHits(self, world)
+-- Push props that the active kick hitbox overlaps, and break blocks it hits,
+-- once per kick.
+function controller.kickHits(self, level)
     if self.kickTime <= 0 then
         return
     end
     local box = controller.kickBox(self)
-    for _, prop in ipairs(world.props) do
+    for _, prop in ipairs(level.props) do
         if not prop.held and not self.kickHits[prop] and physics.overlaps(box, prop) then
             self.kickHits[prop] = true
             prop.vx = self.facing * CONFIG.kickPush
             prop.vy = CONFIG.kickLift
             prop.onGround = false
             state.emit(self, "kickHit")
+        end
+    end
+    for _, block in ipairs(level.blocks) do
+        if not self.kickHits[block] and physics.overlaps(box, block) then
+            self.kickHits[block] = true
+            block.broken = block:onKick(self) == true
+        end
+    end
+    for _, enemy in ipairs(level.enemies) do
+        if not enemy.held and not self.kickHits[enemy] and physics.overlaps(box, enemy) then
+            self.kickHits[enemy] = true
+            if enemy:onKick(self) then
+                enemy.killedBy = "kick"
+                enemy.kickVx = self.facing * CONFIG.enemyKickPush
+                enemy.kickVy = CONFIG.enemyKickLift
+            end
         end
     end
 end

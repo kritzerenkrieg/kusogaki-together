@@ -10,23 +10,28 @@ audio.musicPath = "assets/audio/music"
 audio.sfxPath = "assets/audio/sfx"
 
 audio.currentMusic = nil
+audio.currentMusicName = nil
 
 -- Music keeps a track-specific gain, but dynamic live changes belong to SFX.
 audio.currentMusicVolume = 1
 audio.currentSfxVolume = 1
+
+-- Keep pan inside the -1..1 stereo range; nil falls back to centre (0).
+local function normalizePan(pan)
+    return mathx.clamp(pan or 0, -1, 1)
+end
 
 -- Turn a 0..1 request into a clamped LÖVE volume.
 local function normalizeVolume(volume)
     return mathx.clamp(volume or 1, 0, 1)
 end
 
--- Keep pan inside the -1..1 stereo range.
-local function normalizePan(pan)
-    return mathx.clamp(pan or 0, -1, 1)
-end
-
 -- Streams and loops a music track.
 function audio.playMusic(name, volume)
+    -- Already playing this track: keep it running instead of restarting it.
+    if audio.currentMusic and audio.currentMusicName == name then
+        return audio.currentMusic
+    end
     audio.stopMusic()
 
     local source = love.audio.newSource(
@@ -46,6 +51,7 @@ function audio.playMusic(name, volume)
     source:play()
 
     audio.currentMusic = source
+    audio.currentMusicName = name
 
     return source
 end
@@ -56,10 +62,12 @@ function audio.stopMusic()
         audio.currentMusic:stop()
         audio.currentMusic:release()
         audio.currentMusic = nil
+        audio.currentMusicName = nil
     end
 end
 
--- Plays a short sound effect.
+-- Plays a short sound effect. `pan` is -1 (left) .. 1 (right), default 0 (centre).
+-- LÖVE only pans mono sources, so sound effect files must be mono.
 function audio.playSfx(name, volume, pan)
     local source = love.audio.newSource(
         audio.sfxPath .. "/" .. name,
@@ -73,7 +81,9 @@ function audio.playSfx(name, volume, pan)
         audio.currentSfxVolume * audio.masterSfxVolume
     )
 
-    source:setPan(normalizePan(pan))
+    -- Positional audio: the listener sits at the centre, the source at x = pan.
+    source:setRelative(true)
+    source:setPosition(normalizePan(pan), 0, 0)
     source:play()
 
     return source

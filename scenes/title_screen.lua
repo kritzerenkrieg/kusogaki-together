@@ -2,6 +2,9 @@ local render = require("core.graphics.render")
 local text = require("core.text")
 local mathx = require("core.math")
 local sceneEngine = require("core.scenes")
+local audio = require("core.audio")
+
+local TITLE_MUSIC = "kusogaki.wav"
 
 local titleScreen = {}
 local backgroundPath = "assets/graphics/ui/title/bg.png"
@@ -180,6 +183,9 @@ function titleScreen.keypressed(key)
 end
 
 sceneEngine.register("menu", {
+    enter = function()
+        audio.playMusic(TITLE_MUSIC)
+    end,
     keypressed = function(key)
         local nextScene = titleScreen.keypressed(key)
         if nextScene == "exit" then
@@ -195,6 +201,9 @@ sceneEngine.register("menu", {
 })
 
 sceneEngine.register("intro_splash", {
+    enter = function()
+        audio.playMusic(TITLE_MUSIC)
+    end,
     keypressed = function(key)
         titleScreen.intro_skip()
         return "menu"

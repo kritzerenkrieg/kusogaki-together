@@ -1,5 +1,5 @@
 -- Entity type script: "box", a carryable prop. Runs in the sandbox; the base
--- classes Entity and Prop are injected by core/level.lua.
+-- classes Entity and Prop are injected by core/level/loader.lua.
 local Box = setmetatable({}, { __index = Prop })
 Box.__index = Box
 
