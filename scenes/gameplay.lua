@@ -1,6 +1,7 @@
 -- Gameplay scene: loads a level and a player, and runs them.
 local sceneEngine = require("core.scenes")
 local fx = require("core.graphics.fx")
+local camera = require("core.graphics.camera")
 local hud = require("core.graphics.hud")
 local playerModule = require("core.player")
 local feedback = require("core.player.feedback")
@@ -20,6 +21,7 @@ local function buildLevel()
 
     player = playerModule.new(level.spawn.x, level.spawn.y)
     player.onEvent = feedback.onEvent
+    camera.follow(player.x, level.width)
 end
 
 function gameplay.load()
@@ -29,6 +31,7 @@ end
 
 function gameplay.update(delta)
     level:update(delta, player)
+    camera.follow(player.x, level.width)
 end
 
 function gameplay.keypressed(key)
@@ -40,10 +43,15 @@ function gameplay.keypressed(key)
 end
 
 function gameplay.draw()
+    level:drawBackground()
+    camera.pushWorld()
     level:draw()
     fx.drawDebris()
     fx.drawCorpses()
     player:draw()
+    fx.drawExplosions()
+    camera.popWorld()
+    level:drawHud()
     hud.draw(player)
 end
 

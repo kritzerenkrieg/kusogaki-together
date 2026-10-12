@@ -35,6 +35,12 @@ function player:die()
     state.die(self)
 end
 
+-- Where this player respawns after dying (e.g. a checkpoint). Restarting the
+-- level creates a new player, which starts back at the level's spawn.
+function player:setSpawn(x, y)
+    self.spawnX, self.spawnY = x, y
+end
+
 -- Bounce up off an enemy: a full jump without needing the jump key.
 function player:bounce()
     controller.bounce(self)

@@ -29,6 +29,15 @@ function love.keypressed(key)
     sceneEngine.keypressed(key)
 end
 
+function love.mousemoved(x, y)
+    sceneEngine.mousemoved(render.toCanvas(x, y))
+end
+
+function love.mousepressed(x, y, button)
+    local canvasX, canvasY = render.toCanvas(x, y)
+    sceneEngine.mousepressed(canvasX, canvasY, button)
+end
+
 function love.draw()
     render.beginFrame()
     camera.pushCamera()

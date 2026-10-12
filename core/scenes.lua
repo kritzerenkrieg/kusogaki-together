@@ -43,6 +43,29 @@ function sceneEngine.keypressed(key)
     end
 end
 
+-- Pointer input, in canvas coordinates. mousepressed may return a scene name
+-- like keypressed.
+function sceneEngine.mousemoved(x, y)
+    local scene = sceneEngine.scenes[sceneEngine.current]
+    if scene and scene.mousemoved then
+        scene.mousemoved(x, y)
+    end
+end
+
+function sceneEngine.mousepressed(x, y, button)
+    local scene = sceneEngine.scenes[sceneEngine.current]
+    if not scene or not scene.mousepressed then
+        return
+    end
+
+    local nextScene = scene.mousepressed(x, y, button)
+    if nextScene == "exit" then
+        love.event.quit()
+    elseif nextScene then
+        sceneEngine.switch(nextScene)
+    end
+end
+
 function sceneEngine.draw()
     local scene = sceneEngine.scenes[sceneEngine.current]
     if scene and scene.draw then

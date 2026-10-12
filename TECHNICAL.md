@@ -45,14 +45,14 @@ LÖVE's LuaJIT has no built-in sandbox, and Lua environment restrictions are a g
 ```text
 Level Package
 ├── level data   -- level.json
-├── Lua scripts  -- entity types and behavior (entities/, sandboxed)
+├── Lua scripts  -- entity types (entities/) and level scripts (scripts/), sandboxed
 ├── assets       -- images and media
 └── metadata     -- name, format version
 ```
 
 Levels are portable and versioned. Level data is declarative and never executes; Lua scripts run only inside the sandbox.
 
-Implemented: `core/level/loader.lua` reads `levels/<name>/level.json` (format 1: `spawn`, `background`, `static`, `entities`), validates names, and builds level data. Each type runs once per load from `levels/<name>/entities/<type>.lua` via `core/script.lua`.
+Implemented: `core/level/loader.lua` reads `levels/<name>/level.json` (format 1: `spawn`, `background`, `static`, `entities`, optional `scripts`), validates names, and builds level data. Each type runs once per load from `levels/<name>/entities/<type>.lua`, and each listed level script from `levels/<name>/scripts/<script>.lua`, via `core/script.lua`.
 
 Code layout, the running level, gameplay rules and physics rules are in `ARCHITECTURE.md`.
 

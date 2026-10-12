@@ -186,6 +186,7 @@ function fx.update(dt)
 
     camera.update(dt)
     fx.updateDebris(dt)
+    fx.updateExplosions(dt)
     fx.updateCorpses(dt)
 end
 
@@ -211,7 +212,9 @@ local debris = {}
 -- Spawn chips for a block centered at (x, y) with size w x h. `statics` is the
 -- level's static list, which chips collide with while falling. `region` is the
 -- part of the image to cut chips from (pixels); default is the whole image.
-function fx.debris(x, y, w, h, image, statics, region)
+-- `power` scales the burst speed (default 1).
+function fx.debris(x, y, w, h, image, statics, region, power)
+    power = power or 1
     local chipW, chipH = w / DEBRIS_GRID, h / DEBRIS_GRID
     local imageW, imageH = 0, 0
     if image then
@@ -226,8 +229,8 @@ function fx.debris(x, y, w, h, image, statics, region)
             local outward = (cx - x) / (w / 2) -- -1 (left edge) .. 1 (right edge)
             local chip = {
                 x = cx, y = cy, w = chipW, h = chipH,
-                vx = outward * DEBRIS_SPEED + (love.math.random() - 0.5) * 60,
-                vy = -DEBRIS_LIFT * (0.5 + love.math.random() * 0.5),
+                vx = (outward * DEBRIS_SPEED + (love.math.random() - 0.5) * 60) * power,
+                vy = -DEBRIS_LIFT * (0.5 + love.math.random() * 0.5) * power,
                 rotation = 0,
                 spin = (love.math.random() - 0.5) * 14,
                 life = 0,
@@ -277,6 +280,206 @@ function fx.drawDebris()
         else
             love.graphics.setColor(0.86, 0.52, 0.24, alpha)
             love.graphics.rectangle("fill", chip.x - chip.w / 2, chip.y - chip.h / 2, chip.w, chip.h)
+        end
+    end
+end
+
+-- Explosion: a block bursts into its own debris chips, the camera shakes, a
+-- round fireball and shockwave expand, and a ball of voxels flies out. Fireball
+-- and shockwave are drawn on a pixel grid, so the circles stay blocky. Heat
+-- falls with distance from the blast and with age, cooling from white-hot
+-- through orange and red to smoke; voxels are shaded as small cubes (light
+-- top-left edge, dark bottom-right edge).
+local EXPLOSION_VOXELS = 48
+local EXPLOSION_LIFE = 0.8    -- seconds the blast lives
+local EXPLOSION_FADE = 0.3    -- last part of the life spent fading out
+local EXPLOSION_SPEED = 280   -- outward burst speed (px/s), varied per voxel
+local EXPLOSION_DRAG = 4      -- per-second slowdown of voxels
+local EXPLOSION_RISE = 60     -- upward drift of cooling smoke (px/s^2)
+local EXPLOSION_RADIUS = 64   -- px over which voxel light falls off
+local FIREBALL_RADIUS = 30    -- largest fireball radius (px)
+local FIREBALL_GROW = 0.12    -- seconds for the fireball to reach full size
+local FIREBALL_LIFE = 0.45    -- seconds until the fireball has shrunk away
+local SHOCKWAVE_RADIUS = 60   -- radius the shockwave ring reaches (px)
+local SHOCKWAVE_LIFE = 0.3    -- seconds the shockwave lives
+local BLAST_CELL = 2          -- pixel grid for fireball and shockwave (px)
+
+-- Hot to cold.
+local VOXEL_PALETTE = {
+    { 1.00, 0.98, 0.85 },
+    { 1.00, 0.84, 0.30 },
+    { 1.00, 0.52, 0.15 },
+    { 0.72, 0.20, 0.10 },
+    { 0.32, 0.29, 0.29 },
+}
+
+local explosions = {}
+
+-- Blow up a block centered at (x, y) with size w x h; see fx.debris for the rest.
+function fx.explosion(x, y, w, h, image, statics, region)
+    fx.debris(x, y, w, h, image, statics, region, 1.6)
+    camera.shake(0.4, 10)
+
+    local voxels = {}
+    for i = 1, EXPLOSION_VOXELS do
+        local angle = love.math.random() * math.pi * 2
+        local speed = EXPLOSION_SPEED * (0.25 + love.math.random() * 0.75)
+        voxels[i] = {
+            x = x + (love.math.random() - 0.5) * w * 0.5,
+            y = y + (love.math.random() - 0.5) * h * 0.5,
+            vx = math.cos(angle) * speed,
+            vy = math.sin(angle) * speed,
+            size = love.math.random(3, 6),
+        }
+    end
+    explosions[#explosions + 1] = {
+        x = x, y = y, w = w, h = h, voxels = voxels, life = 0,
+        seed = love.math.random() * math.pi * 2, -- rotates the fireball's lobes
+    }
+end
+
+function fx.updateExplosions(dt)
+    for i = #explosions, 1, -1 do
+        local blast = explosions[i]
+        blast.life = blast.life + dt
+        if blast.life >= EXPLOSION_LIFE then
+            table.remove(explosions, i)
+        else
+            local drag = math.max(0, 1 - EXPLOSION_DRAG * dt)
+            for _, voxel in ipairs(blast.voxels) do
+                voxel.vx = voxel.vx * drag
+                voxel.vy = voxel.vy * drag - EXPLOSION_RISE * dt
+                voxel.x = voxel.x + voxel.vx * dt
+                voxel.y = voxel.y + voxel.vy * dt
+            end
+        end
+    end
+end
+
+-- Heat 1 (white-hot) .. 0 (smoke) from distance to the blast and age.
+local function voxelColor(blast, voxel, age)
+    local distance = math.sqrt((voxel.x - blast.x) ^ 2 + (voxel.y - blast.y) ^ 2)
+    local heat = mathx.clamp(1 - age * 1.1 - distance / EXPLOSION_RADIUS * 0.5, 0, 1)
+    local index = math.floor((1 - heat) * (#VOXEL_PALETTE - 1) + 0.5) + 1
+    return VOXEL_PALETTE[index], heat
+end
+
+-- Call fn(cellX, cellY, distance, angle) for every grid cell whose center lies
+-- within `radius` of (cx, cy). Cells sit on a world-aligned grid.
+local function eachDiscCell(cx, cy, radius, fn)
+    local startX = math.floor((cx - radius) / BLAST_CELL) * BLAST_CELL
+    local startY = math.floor((cy - radius) / BLAST_CELL) * BLAST_CELL
+    for cellY = startY, cy + radius, BLAST_CELL do
+        for cellX = startX, cx + radius, BLAST_CELL do
+            local dx = cellX + BLAST_CELL / 2 - cx
+            local dy = cellY + BLAST_CELL / 2 - cy
+            local distance = math.sqrt(dx * dx + dy * dy)
+            if distance <= radius then
+                fn(cellX, cellY, distance, math.atan2(dy, dx))
+            end
+        end
+    end
+end
+
+-- Fireball radius: grows fast, then shrinks away as it burns out.
+local function fireballRadius(life)
+    if life < FIREBALL_GROW then
+        local t = life / FIREBALL_GROW
+        return FIREBALL_RADIUS * (1 - (1 - t) * (1 - t))
+    end
+    local t = mathx.clamp((life - FIREBALL_GROW) / (FIREBALL_LIFE - FIREBALL_GROW), 0, 1)
+    return FIREBALL_RADIUS * (1 - t * t)
+end
+
+-- Edge wobble: the fireball's radius varies by angle, so it reads as a rough
+-- radial burst rather than a perfect circle.
+local FIREBALL_LOBES = 5
+local FIREBALL_WOBBLE = 0.18  -- fraction of the radius the edge moves in and out
+
+local function lobe(blast, angle)
+    return 1 + FIREBALL_WOBBLE * math.sin(angle * FIREBALL_LOBES + blast.seed)
+end
+
+-- A rough disc banded by heat: white-hot core, cooler bands outward, all
+-- cooling with age.
+local function drawFireball(blast, age)
+    local radius = fireballRadius(blast.life)
+    if radius < 1 then
+        return
+    end
+    -- Soft halo behind the ball.
+    love.graphics.setBlendMode("add")
+    eachDiscCell(blast.x, blast.y, radius * 1.5, function(cellX, cellY, distance)
+        local glow = 1 - distance / (radius * 1.5)
+        love.graphics.setColor(1, 0.6, 0.2, glow * 0.5 * (1 - age))
+        love.graphics.rectangle("fill", cellX, cellY, BLAST_CELL, BLAST_CELL)
+    end)
+    love.graphics.setBlendMode("alpha")
+    eachDiscCell(blast.x, blast.y, radius * (1 + FIREBALL_WOBBLE), function(cellX, cellY, distance, angle)
+        local edge = radius * lobe(blast, angle)
+        if distance > edge then
+            return
+        end
+        local heat = mathx.clamp(1 - age * 1.4 - (distance / edge) * 0.7, 0, 1)
+        local color = VOXEL_PALETTE[math.floor((1 - heat) * (#VOXEL_PALETTE - 1) + 0.5) + 1]
+        love.graphics.setColor(color[1], color[2], color[3], 1)
+        love.graphics.rectangle("fill", cellX, cellY, BLAST_CELL, BLAST_CELL)
+    end)
+end
+
+-- An expanding ring, one cell thick, fading as it grows.
+local function drawShockwave(blast)
+    if blast.life >= SHOCKWAVE_LIFE then
+        return
+    end
+    local t = blast.life / SHOCKWAVE_LIFE
+    local ring = SHOCKWAVE_RADIUS * (1 - (1 - t) * (1 - t))
+    love.graphics.setBlendMode("add")
+    love.graphics.setColor(1, 0.9, 0.7, (1 - t) * 0.8)
+    eachDiscCell(blast.x, blast.y, ring, function(cellX, cellY, distance)
+        if distance >= ring - BLAST_CELL * 1.5 then
+            love.graphics.rectangle("fill", cellX, cellY, BLAST_CELL, BLAST_CELL)
+        end
+    end)
+    love.graphics.setBlendMode("alpha")
+end
+
+local function drawVoxel(x, y, size, color, alpha)
+    local r, g, b = color[1], color[2], color[3]
+    love.graphics.setColor(r, g, b, alpha)
+    love.graphics.rectangle("fill", x, y, size, size)
+    love.graphics.setColor(math.min(1, r * 1.3 + 0.1), math.min(1, g * 1.3 + 0.1), math.min(1, b * 1.3 + 0.1), alpha)
+    love.graphics.rectangle("fill", x, y, size, 1)
+    love.graphics.rectangle("fill", x, y, 1, size)
+    love.graphics.setColor(r * 0.55, g * 0.55, b * 0.55, alpha)
+    love.graphics.rectangle("fill", x, y + size - 1, size, 1)
+    love.graphics.rectangle("fill", x + size - 1, y, 1, size)
+end
+
+-- Draw blasts in world space: shockwave, fireball, voxel glow, then the voxels.
+function fx.drawExplosions()
+    for _, blast in ipairs(explosions) do
+        local age = blast.life / EXPLOSION_LIFE
+        local alpha = mathx.clamp((EXPLOSION_LIFE - blast.life) / EXPLOSION_FADE, 0, 1)
+
+        drawShockwave(blast)
+        drawFireball(blast, age)
+
+        love.graphics.setBlendMode("add")
+        for _, voxel in ipairs(blast.voxels) do
+            local color, heat = voxelColor(blast, voxel, age)
+            if heat > 0 then
+                local glow = voxel.size * 2
+                love.graphics.setColor(color[1], color[2], color[3], heat * 0.35 * alpha)
+                love.graphics.rectangle("fill", math.floor(voxel.x - glow / 2), math.floor(voxel.y - glow / 2), glow, glow)
+            end
+        end
+        love.graphics.setBlendMode("alpha")
+
+        for _, voxel in ipairs(blast.voxels) do
+            local color = voxelColor(blast, voxel, age)
+            local size = math.max(1, math.floor(voxel.size * (1 - age * 0.4) + 0.5))
+            drawVoxel(math.floor(voxel.x - size / 2), math.floor(voxel.y - size / 2), size, color, alpha)
         end
     end
 end
@@ -360,9 +563,10 @@ function fx.drawCorpses()
     end
 end
 
--- Drop all debris and corpses, e.g. when the level is rebuilt.
+-- Drop all debris, explosions and corpses, e.g. when the level is rebuilt.
 function fx.clearEffects()
     debris = {}
+    explosions = {}
     corpses = {}
 end
 

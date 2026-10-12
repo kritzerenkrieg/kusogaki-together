@@ -36,18 +36,27 @@ function render.beginFrame()
     love.graphics.clear(0.08, 0.10, 0.15, 1)
 end
 
+-- Integer scale and centering offset of the canvas in the window.
+local function windowLayout()
+    local windowWidth, windowHeight = love.graphics.getDimensions()
+    local scale = math.floor(math.min(windowWidth / render.width, windowHeight / render.height))
+    scale = math.max(scale, 1)
+    local offsetX = math.floor((windowWidth - render.width * scale) / 2)
+    local offsetY = math.floor((windowHeight - render.height * scale) / 2)
+    return scale, offsetX, offsetY
+end
+
+-- Window pixel position (e.g. the mouse) to canvas coordinates.
+function render.toCanvas(windowX, windowY)
+    local scale, offsetX, offsetY = windowLayout()
+    return (windowX - offsetX) / scale, (windowY - offsetY) / scale
+end
+
 function render.present()
     love.graphics.setCanvas()
     love.graphics.clear(0, 0, 0, 1)
 
-    local windowWidth, windowHeight = love.graphics.getDimensions()
-    local scale = math.floor(math.min(windowWidth / render.width, windowHeight / render.height))
-    scale = math.max(scale, 1)
-    local drawWidth = render.width * scale
-    local drawHeight = render.height * scale
-    local offsetX = math.floor((windowWidth - drawWidth) / 2)
-    local offsetY = math.floor((windowHeight - drawHeight) / 2)
-
+    local scale, offsetX, offsetY = windowLayout()
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.draw(render.canvas, offsetX, offsetY, 0, scale, scale)
 end

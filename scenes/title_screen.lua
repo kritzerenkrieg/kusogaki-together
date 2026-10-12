@@ -128,13 +128,32 @@ drawIntroFrame = function(w, h, elapsed)
     end
 end
 
+-- Menu option centers on the canvas.
+local OPTION_TOP, OPTION_SPACING = 182, 58
+
+local function optionY(index)
+    return OPTION_TOP + (index - 1) * OPTION_SPACING
+end
+
+-- Index of the option under canvas point (x, y), or nil. Hit boxes are the
+-- option images at rest (no wobble).
+local function optionAt(x, y)
+    for index, option in ipairs(options) do
+        local w, h = option.image:getDimensions()
+        if math.abs(x - render.width / 2) <= w / 2 and math.abs(y - optionY(index)) <= h / 2 then
+            return index
+        end
+    end
+    return nil
+end
+
 -- SECOND PART - the actual title screen (main menu).
 function titleScreen.title_splash(canvasWidth, canvasHeight)
     render.drawImage(bgImage, 0, 0, 1)
     render.drawImage(titleImage, 0, 0, 1)
 
     for index, option in ipairs(options) do
-        local y = 182 + (index - 1) * 58
+        local y = optionY(index)
         local isSelected = index == selectedOption
         local scale = 1
         local rotation = 0
@@ -157,12 +176,30 @@ function titleScreen.title_splash(canvasWidth, canvasHeight)
             option.image:getHeight() / 2
         )
     end
+end
 
-    love.graphics.setColor(0, 0, 0, 1)
-    text.print(
-        "CONTROLS: Use arrow keys to navigate, ENTER to select, Z to confirm, X to cancel, C for functions.",
-        30, canvasHeight - 18, 10
-    )
+-- Scene for the selected option: play, nothing yet (options), or exit.
+local function activate()
+    if selectedOption == 1 then
+        return "gameplay"
+    elseif selectedOption == #options then
+        return "exit"
+    end
+    return nil -- options screen not built yet
+end
+
+-- Hovering an option selects it.
+function titleScreen.mousemoved(x, y)
+    selectedOption = optionAt(x, y) or selectedOption
+end
+
+-- Left-click on an option activates it; returns the next scene to enter.
+function titleScreen.mousepressed(x, y, button)
+    local index = button == 1 and optionAt(x, y)
+    if index then
+        selectedOption = index
+        return activate()
+    end
 end
 
 -- Menu navigation; returns the next scene to enter.
@@ -178,7 +215,17 @@ function titleScreen.keypressed(key)
             selectedOption = 1
         end
     elseif key == "return" or key == "space" then
-        return selectedOption == 1 and "gameplay" or "exit"
+        return activate()
+    end
+end
+
+-- Leave the menu for `nextScene` (from a key or a click).
+local function goTo(nextScene)
+    if nextScene == "exit" then
+        love.event.quit()
+    elseif nextScene then
+        local fx = require("core.graphics.fx")
+        fx.toScene(nextScene, 0.5, { ease = "smoothstep" })
     end
 end
 
@@ -187,13 +234,11 @@ sceneEngine.register("menu", {
         audio.playMusic(TITLE_MUSIC)
     end,
     keypressed = function(key)
-        local nextScene = titleScreen.keypressed(key)
-        if nextScene == "exit" then
-            love.event.quit()
-        elseif nextScene then
-            local fx = require("core.graphics.fx")
-            fx.toScene(nextScene, 0.5, { ease = "smoothstep" })
-        end
+        goTo(titleScreen.keypressed(key))
+    end,
+    mousemoved = titleScreen.mousemoved,
+    mousepressed = function(x, y, button)
+        goTo(titleScreen.mousepressed(x, y, button))
     end,
     draw = function()
         titleScreen.title_splash(render.width, render.height)
@@ -205,6 +250,10 @@ sceneEngine.register("intro_splash", {
         audio.playMusic(TITLE_MUSIC)
     end,
     keypressed = function(key)
+        titleScreen.intro_skip()
+        return "menu"
+    end,
+    mousepressed = function()
         titleScreen.intro_skip()
         return "menu"
     end,

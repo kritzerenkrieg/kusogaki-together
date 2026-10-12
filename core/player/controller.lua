@@ -126,7 +126,9 @@ function controller.kickHits(self, level)
     for _, block in ipairs(level.blocks) do
         if not self.kickHits[block] and physics.overlaps(box, block) then
             self.kickHits[block] = true
-            block.broken = block:onKick(self) == true
+            if block:onKick(self) then
+                block.brokenBy = self
+            end
         end
     end
     for _, enemy in ipairs(level.enemies) do

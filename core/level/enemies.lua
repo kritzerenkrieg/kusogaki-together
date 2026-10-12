@@ -1,14 +1,18 @@
 -- Enemy rules. See ARCHITECTURE.md (Level rules: enemies).
 local physics = require("core.physics")
 local fx = require("core.graphics.fx")
+local render = require("core.graphics.render")
+local audio = require("core.audio")
 local playerConfig = require("core.player.config")
+local blast = require("core.level.blast")
 
 local enemies = {}
 
 local THROWN_KILL_SPEED = 64 -- px/s; a prop faster than this kills an enemy it hits
+local WAKE_DISTANCE = render.width -- px; an enemy starts updating once a player is a screen width away (horizontally)
 
 local function isLive(enemy)
-    return not enemy.killedBy and not enemy.held
+    return not enemy.killedBy and not enemy.held and not enemy.detonated
 end
 
 -- Statics, loose props and other live enemies. A prop overlapping the enemy is
@@ -59,10 +63,24 @@ function enemies.pushOutProps(level)
     end
 end
 
-function enemies.update(level, delta)
+-- Asleep until a live player comes within WAKE_DISTANCE; then awake for good.
+local function wakeUp(enemy, players)
+    if not enemy.awake then
+        for _, player in ipairs(players) do
+            if not player.dead and math.abs(player.x - enemy.x) <= WAKE_DISTANCE then
+                enemy.awake = true
+                break
+            end
+        end
+    end
+    return enemy.awake
+end
+
+-- Each awake enemy sees its own solids and every player (for triggers and targeting).
+function enemies.update(level, delta, players)
     for _, enemy in ipairs(level.enemies) do
-        if not enemy.killedBy then
-            enemy:update(delta, { statics = solidsFor(level, enemy) })
+        if not enemy.killedBy and not enemy.detonated and (enemy.held or wakeUp(enemy, players)) then
+            enemy:update(delta, { statics = solidsFor(level, enemy), players = players })
         end
     end
 end
@@ -83,13 +101,27 @@ function enemies.touchPlayer(level, player)
                 player:die()
             end
         end
-        if enemy.killedBy == "stomp" then
+    end
+end
+
+-- Remove dead and detonated enemies, leaving a corpse or an explosion.
+function enemies.removeDead(level, players)
+    for i = #level.enemies, 1, -1 do
+        local enemy = level.enemies[i]
+        if enemy.detonated then
+            table.remove(level.enemies, i)
+            blast.explode(level, enemy, players)
+        elseif enemy.killedBy == "stomp" then
             table.remove(level.enemies, i)
             fx.flatten(enemy.x, enemy.y, enemy.w, enemy.h, enemy.image, enemy:region())
+            audio.playSfx("hit.wav")
         elseif enemy.killedBy then
             table.remove(level.enemies, i)
             fx.throwAway(enemy.x, enemy.y, enemy.w, enemy.h, enemy.image, enemy:region(),
                 enemy.kickVx, enemy.kickVy)
+            if enemy.killedBy ~= "blast" then -- the explosion already has its sound
+                audio.playSfx("hit.wav")
+            end
         end
     end
 end
