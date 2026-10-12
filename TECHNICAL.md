@@ -55,14 +55,14 @@ Levels are portable and versioned. Level data is declarative and never executes;
 ### Mapping: Level → World → Entities
 
 - **Level** (`levels/<name>/`): level data, Lua scripts, assets, and metadata (see Level Package). Declares spawn, static geometry, and entity placements.
-- **World** (built by `scenes/gameplay.lua`): `solids` (static geometry + hazards), `props` (dynamic entities), `hazards`. Physics and scene logic read only the world.
+- **World** (built by `scenes/gameplay.lua`): `statics` (static geometry), `props` (dynamic entities), `hazards`. Physics and scene logic read only the world.
 - **Entities** (`levels/<name>/entities/<type>.lua`): one class per type. A type defines `name`, `kind` (`"prop"` or `"hazard"`), `assetPath`, `w`/`h`, `load()`, and `new(x, y)`. Base behavior lives in `core/` (`entity.lua`, `prop.lua`).
 - Placements are `{ type, x, y }` in one `entities` list; the type's `kind` decides whether it goes to `props` or `hazards`.
 
 Rules:
 - Collision size belongs to the type (`Type.w`, `Type.h`). Placements give position and instance data only.
 - Placements reference a type by name (`"box"`), never a file path.
-- Hazards are solids; the scene checks touch and kills the player.
+- Hazards are static blocks. Physics records every static a body is blocked by in `body.contacts`; the scene kills the player only for hazards in `player.contacts`. There is no separate touch zone.
 - Coordinates are center-based `x, y, w, h` in pixels, matching physics.
 
 Implemented: `core/level.lua` reads `levels/<name>/level.json` (format 1: `spawn`, `background`, `static`, `entities`), validates names, and builds level data. Each type runs once per load from `levels/<name>/entities/<type>.lua` via `core/script.lua`.
@@ -75,7 +75,15 @@ Implemented: `core/level.lua` reads `levels/<name>/level.json` (format 1: `spawn
 core/
   entity.lua    base entity: collider, mass, movement, draw
   prop.lua      base carryable prop: ground friction, placeholder draw
-  physics.lua   AABB movement, collision, resting contact
+  physics/      AABB physics; require("core.physics") is init.lua
+    config.lua      tuning constants
+    geometry.lua    overlap tests, contact records
+    mass.lua        mass from size, inverse mass
+    movement.lua    sweeping bodies against statics
+    statics.lua     exits from static overlap
+    oneway.lua      props as one-way platforms for the player
+    impulse.lua     contact velocity and friction
+    collision.lua   dynamic body pairs, full collision pass
   player/       platformer player, split by concern:
     init.lua          body and update order; public API
     config.lua        key bindings, tuning, animation timing
@@ -101,10 +109,10 @@ Base behavior lives in `core/`; concrete types live in `levels/`.
 
 ## Physics Rules
 
-- **Held props have no physics.** A carried prop is rendered at the hand, overlapping the player's facing edge by 4px. Solid and body resolution skip it.
+- **Held props have no physics.** A carried prop is rendered at the hand, overlapping the player's facing edge by 4px. Static and body resolution skip it.
 - **Release/throw** moves the prop to touch the player first, so release never shoves the player. If that spot is blocked, the overlap stays.
-- **Push-out side:** `moveBody` records start positions; overlaps push a body back toward the side it came from, not its center, so bodies are not ejected out of the level.
-- **Pinned player:** if a prop's correction would push the player into a solid, the prop takes it instead.
+- **Static exits:** a body overlapping a static takes the cheapest exit (smallest pixel move) that does not land it in another static. Exits are the top face or the face on the side the body is already on. A static never pushes a body downward, and no exit crosses the static. If no exit is clear, the body stays put.
+- **Pair corrections:** a body whose corrected position would sit inside a static gets no share; the other body takes the whole correction. If neither can take it, the correction is skipped. Otherwise the player absorbs it, so props take it only when the player is blocked.
 - **Resting stacks:** a slow fall onto a support clamps the upper body's vertical speed to the support's, regardless of pair order.
 
 ---

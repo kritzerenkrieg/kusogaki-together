@@ -47,6 +47,10 @@ end
 function player:update(delta, world)
     self.prevY = self.y
     delta = math.min(delta, 1 / 30) -- clamp long frames to avoid tunneling
+    -- Contacts describe this frame only. Clear them before any early return, so
+    -- a hazard touched on the frame of death cannot kill the player again after
+    -- respawn (the stale contact made every respawn die instantly).
+    self.contacts = {}
 
     if self.dead then
         state.updateDead(self, delta)
@@ -64,7 +68,7 @@ function player:update(delta, world)
     self.vy = math.min(self.vy + physics.gravity * delta, physics.maxFall)
     local wasGrounded = self.onGround
     local fallSpeed = self.vy
-    physics.moveBody(self, world.solids, delta)
+    physics.moveBody(self, world.statics, delta)
     if self.onGround then
         self.coyote = CONFIG.coyoteTime
         if not wasGrounded and fallSpeed > 260 then

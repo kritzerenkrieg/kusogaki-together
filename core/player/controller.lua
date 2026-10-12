@@ -78,7 +78,7 @@ function controller.kickStart(self, edges, world)
     self.kickHits = {}
     if self.carrying then
         local thrown = carry.throw(self,
-            self.facing * CONFIG.throwSpeed + self.vx * 0.5, CONFIG.throwArc, world.solids)
+            self.facing * CONFIG.throwSpeed + self.vx * 0.5, CONFIG.throwArc, world.statics)
         self.kickHits[thrown] = true -- never kick the prop we just threw
         state.emit(self, "throw")
     else

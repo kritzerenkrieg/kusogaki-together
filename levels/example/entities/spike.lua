@@ -4,9 +4,9 @@ local Spike = setmetatable({}, { __index = Entity })
 Spike.__index = Spike
 
 Spike.name = "spike"
-Spike.kind = "hazard" -- "prop": dynamic body; "hazard": static solid that hurts
+Spike.kind = "hazard" -- "prop": dynamic body; "hazard": static, hurts on touch
 Spike.assetPath = "assets/graphics/entities/spike.png"
-Spike.w, Spike.h = 16, 16 -- collision size (px), owned by the type
+Spike.w, Spike.h = 16, 15 -- collision size (px), owned by the type
 Spike.image = nil
 
 function Spike.load()

@@ -12,22 +12,21 @@ local levelLoader = require("core.level")
 local gameplay = {}
 
 local LEVEL_NAME = "example"
-local HAZARD_TOUCH = 1 -- px around a hazard that still counts as touching it
 
 local level
-local world = { solids = {}, props = {}, hazards = {} }
+local world = { statics = {}, props = {}, hazards = {} }
 local player
 
 local function buildLevel()
     level = levelLoader.load(LEVEL_NAME)
 
-    -- Hazards are solid: props and the player collide with them like any body.
-    world.solids = {}
-    for _, solid in ipairs(level.solids) do
-        world.solids[#world.solids + 1] = solid
+    -- Hazards are static: props and the player collide with them like any body.
+    world.statics = {}
+    for _, static in ipairs(level.statics) do
+        world.statics[#world.statics + 1] = static
     end
     for _, hazard in ipairs(level.hazards) do
-        world.solids[#world.solids + 1] = hazard
+        world.statics[#world.statics + 1] = hazard
     end
     world.hazards = level.hazards
     world.props = level.props
@@ -55,20 +54,6 @@ function gameplay.update(delta)
         prop:update(delta, world)
     end
 
-    -- Hazards are solid, so the player stops flush against them. Test a box
-    -- grown by HAZARD_TOUCH px so flush contact counts as touching.
-    for _, hazard in ipairs(world.hazards) do
-        local touch = {
-            x = hazard.x,
-            y = hazard.y,
-            w = hazard.w + HAZARD_TOUCH * 2,
-            h = hazard.h + HAZARD_TOUCH * 2,
-        }
-        if physics.overlaps(player, touch) then
-            hazard:onTouch(player)
-        end
-    end
-
     -- All dynamic objects collide with one another after their individual
     -- movement. Their mass comes from collider/image area, so larger objects
     -- transfer more momentum into smaller objects. A dead player has no collision.
@@ -79,7 +64,15 @@ function gameplay.update(delta)
     for _, prop in ipairs(world.props) do
         bodies[#bodies + 1] = prop
     end
-    physics.resolveBodyCollisions(bodies, world.solids)
+    physics.resolveBodyCollisions(bodies, world.statics)
+
+    -- A hazard hurts only when the player's physics actually touched it this
+    -- frame (player.contacts is set by the physics), so there is no separate zone.
+    for _, hazard in ipairs(world.hazards) do
+        if not player.dead and player.contacts and player.contacts[hazard] then
+            hazard:onTouch(player)
+        end
+    end
     player:refreshAnimationState()
 end
 

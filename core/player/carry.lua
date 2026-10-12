@@ -46,10 +46,10 @@ local function carriedBox(self, x, y, overlap)
     }
 end
 
--- True when the box overlaps no solid.
-local function boxClear(box, solids)
-    for _, solid in ipairs(solids) do
-        if physics.overlaps(box, solid) then
+-- True when the box overlaps no static.
+local function boxClear(box, statics)
+    for _, static in ipairs(statics) do
+        if physics.overlaps(box, static) then
             return false
         end
     end
@@ -58,14 +58,14 @@ end
 
 -- Release the carried prop with the given velocity. The prop is first moved
 -- out to touch the player (no overlap), so releasing cannot shove the player,
--- unless that spot is blocked by a solid.
-local function release(self, vx, vy, solids)
+-- unless that spot is blocked by a static.
+local function release(self, vx, vy, statics)
     local prop = self.carrying
     if not prop then
         return
     end
     local free = carriedBox(self, self.x, self.y, 0)
-    if boxClear(free, solids) then
+    if boxClear(free, statics) then
         prop.x, prop.y = free.x, free.y
     end
     prop.held = false
@@ -85,15 +85,15 @@ function carry.update(self, edges, world)
         end
     end
     if edges.holdReleased and self.carrying then
-        release(self, self.facing * 30, 0, world.solids) -- gentle drop
+        release(self, self.facing * 30, 0, world.statics) -- gentle drop
         state.emit(self, "drop")
     end
 end
 
 -- Throw the carried prop. Returns the thrown prop.
-function carry.throw(self, vx, vy, solids)
+function carry.throw(self, vx, vy, statics)
     local thrown = self.carrying
-    release(self, vx, vy, solids)
+    release(self, vx, vy, statics)
     return thrown
 end
 

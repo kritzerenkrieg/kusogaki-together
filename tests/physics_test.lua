@@ -1,6 +1,6 @@
 -- Headless physics checks; no LÖVE needed. Run from the project root:
 --   lua tests/physics_test.lua
-package.path = "./?.lua;" .. package.path
+package.path = "./?.lua;./?/init.lua;" .. package.path
 local physics = require("core.physics")
 
 local failures = 0
@@ -16,13 +16,13 @@ end
 local DT = 1 / 60
 
 -- Same order as gameplay: gravity + move per body, then pairwise resolution.
-local function step(bodies, solids, frames)
+local function step(bodies, statics, frames)
     for _ = 1, frames do
         for _, body in ipairs(bodies) do
             body.vy = math.min(body.vy + physics.gravity * DT, physics.maxFall)
-            physics.moveBody(body, solids, DT)
+            physics.moveBody(body, statics, DT)
         end
-        physics.resolveBodyCollisions(bodies, solids)
+        physics.resolveBodyCollisions(bodies, statics)
     end
 end
 
@@ -54,17 +54,17 @@ end
 
 -- Stack against a wall must stay still and aligned --------------------------
 do
-    local stack, solids = {}, { FLOOR, WALL_LEFT }
+    local stack, statics = {}, { FLOOR, WALL_LEFT }
     for i = 0, 3 do
         stack[#stack + 1] = body(8, 334 - 16 * i, 16, 16)
     end
-    step(stack, solids, 240)
+    step(stack, statics, 240)
 
     local before = {}
     for i, b in ipairs(stack) do
         before[i] = { x = b.x, y = b.y }
     end
-    step(stack, solids, 120)
+    step(stack, statics, 120)
 
     local drift, shear = 0, 0
     for i, b in ipairs(stack) do
@@ -85,6 +85,52 @@ do
     check("wedged player is not sunk into the floor", player.y <= 330 + 0.05,
         ("y %.3f"):format(player.y))
     check("box comes to rest on the player", box.y < 311, ("y %.3f"):format(box.y))
+end
+
+local function overlapsAnyStatic(b, statics)
+    for _, s in ipairs(statics) do
+        if physics.overlaps(b, s) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Box inside box, hugging floor and wall ------------------------------------
+-- Two boxes at the same spot used to be shoved sideways out of the level or
+-- into the floor. They must end up free of statics and near where they started.
+do
+    local statics = { FLOOR, WALL_LEFT }
+    local a, b = body(8, 334, 16, 16), body(8, 334, 16, 16)
+    step({ a, b }, statics, 120)
+    check("coincident boxes at the wall leave no static overlap",
+        not overlapsAnyStatic(a, statics) and not overlapsAnyStatic(b, statics))
+    check("coincident boxes at the wall stay in the level",
+        a.x > -1 and b.x > -1 and a.x < 40 and b.x < 40,
+        ("x %.2f %.2f"):format(a.x, b.x))
+end
+
+-- Box dropped into a box on the floor: the upper box is lifted, not ejected.
+do
+    local statics = { FLOOR, WALL_LEFT }
+    local lower, upper = body(100, 334, 16, 16), body(100, 318, 16, 16)
+    step({ lower, upper }, statics, 120)
+    check("box inside a box on the floor leaves no static overlap",
+        not overlapsAnyStatic(lower, statics) and not overlapsAnyStatic(upper, statics))
+    check("box inside a box on the floor is not thrown sideways",
+        math.abs(upper.x - 100) < 1, ("x %.2f"):format(upper.x))
+end
+
+-- A static never pushes a body downward ------------------------------------
+-- A body under a ceiling leaves sideways, not down.
+do
+    local ceiling = { x = 100, y = 92, w = 40, h = 12 }
+    local bodyUnder = body(100, 100, 16, 16)
+    physics.resolveBodyAgainstStatics(bodyUnder, { ceiling })
+    check("body under a ceiling is not pushed down",
+        bodyUnder.y <= 100 + 0.01, ("y %.3f"):format(bodyUnder.y))
+    check("body under a ceiling leaves sideways and clears it",
+        not overlapsAnyStatic(bodyUnder, { ceiling }), ("x %.3f"):format(bodyUnder.x))
 end
 
 print(failures == 0 and "all physics checks passed" or (failures .. " physics check(s) failed"))

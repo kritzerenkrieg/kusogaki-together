@@ -36,7 +36,7 @@ function Entity:update(delta, world)
 
     delta = math.min(delta, 1 / 30)
     self.vy = math.min(self.vy + physics.gravity * delta, physics.maxFall)
-    physics.moveBody(self, world.solids, delta)
+    physics.moveBody(self, world.statics, delta)
 end
 
 function Entity:draw()
