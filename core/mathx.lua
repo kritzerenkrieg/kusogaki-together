@@ -47,7 +47,9 @@ local MODULUS = 2147483647
 local MULTIPLIER = 48271
 
 local Random = {}
-Random.__index = Random
+-- Scripts reach generators through the level: a separate, protected metatable
+-- keeps the class out of reach (see Level's LEVEL_META).
+local RANDOM_META = { __index = Random, __metatable = false }
 
 -- Any number or string seed maps to a state in [1, MODULUS - 1].
 local function seedState(seed)
@@ -67,7 +69,7 @@ local function seedState(seed)
 end
 
 function mathx.newRandom(seed)
-    return setmetatable({ state = seedState(seed) }, Random)
+    return setmetatable({ state = seedState(seed) }, RANDOM_META)
 end
 
 -- Like math.random: no arguments gives [0, 1); random(n) an integer in

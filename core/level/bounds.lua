@@ -9,8 +9,9 @@ end
 
 local function removeFallen(level, list)
     for i = #list, 1, -1 do
-        if not list[i].held and fellOut(level, list[i]) then
-            table.remove(list, i)
+        local body = list[i]
+        if not body.held and fellOut(level, body) then
+            level:removeEntity(body)
         end
     end
 end

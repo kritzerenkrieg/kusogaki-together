@@ -6,7 +6,7 @@ FakeBrick.__index = FakeBrick
 FakeBrick.name = "fake_brick"
 FakeBrick.kind = "block"
 FakeBrick.explosive = true -- breaking it explodes and kills the player
-FakeBrick.assetPath = "levels/example/assets/brick.png"
+FakeBrick.assetPath = "assets/brick.png"
 FakeBrick.w, FakeBrick.h = 16, 16
 FakeBrick.image = nil
 

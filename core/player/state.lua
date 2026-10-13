@@ -1,6 +1,7 @@
 -- Player state: fields, timers, death/respawn transitions and the displayed
 -- movement state.
 local physics = require("core.physics")
+local events = require("core.level.events")
 local config = require("core.player.config")
 
 local CONFIG, ANIM = config.CONFIG, config.ANIM
@@ -28,11 +29,9 @@ function state.init(self)
     self.prevKeys = { jump = false, kick = false, hold = false }
 end
 
--- Notify the scene (camera shake, sound) of a gameplay event.
+-- Report a player event (jump, death, kick...) for sound and camera shake.
 function state.emit(self, name)
-    if self.onEvent then
-        self.onEvent(name, self)
-    end
+    events.emit({ type = "player", name = name, player = self.id, x = self.x, y = self.y })
 end
 
 -- Count down the action timers.

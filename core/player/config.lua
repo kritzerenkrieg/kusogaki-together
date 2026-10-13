@@ -1,5 +1,6 @@
 -- Player tuning: key bindings, movement/jump/kick/carry values, animation timing.
--- Bindings: Z = jump, X = kick (throws the carried prop), C = hold (grab & carry).
+-- Bindings (player 1 keyboard): Z = jump, C = kick (throws the carried prop),
+-- X = hold (grab & carry). Other devices are in core/input.lua.
 return {
     KEYS = {
         left  = "left",
@@ -43,5 +44,15 @@ return {
         frame    = 0.2,
         kick     = 0.4, -- two frames
         longIdle = 5,   -- idle time before the long-idle animation starts
+    },
+
+    -- Sprite tint per player id, so local players tell each other apart.
+    -- Player 1 keeps the original colors.
+    TINTS = {
+        { 1, 1, 1 },
+        { 0.62, 0.82, 1 },
+        { 1, 0.66, 0.78 },
+        { 0.66, 1, 0.66 },
+        { 1, 0.9, 0.5 },
     },
 }

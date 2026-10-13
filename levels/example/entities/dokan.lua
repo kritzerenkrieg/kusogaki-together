@@ -14,7 +14,7 @@ Dokan.__index = Dokan
 
 Dokan.name = "dokan"
 Dokan.kind = "enemy" -- stomp, kick or hit it with a prop to kill it; grab it to throw it back
-Dokan.assetPath = "levels/example/assets/dokan.png"
+Dokan.assetPath = "assets/dokan.png"
 Dokan.w, Dokan.h = 14, 14   -- collider; the 16x24 sprite rotates around it
 Dokan.speed = 300           -- flight speed (px/s), from the moment it launches
 Dokan.triggerRadius = 48    -- default trigger radius (px)

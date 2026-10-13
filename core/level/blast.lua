@@ -1,6 +1,5 @@
 -- Explosions in a level. See ARCHITECTURE.md (Level rules: blasts).
-local fx = require("core.graphics.fx")
-local audio = require("core.audio")
+local events = require("core.level.events")
 local playerConfig = require("core.player.config")
 
 local blast = {}
@@ -12,12 +11,12 @@ local function distanceToBox(x, y, body)
     return math.sqrt(dx * dx + dy * dy)
 end
 
--- Blow up `source` (an enemy or prop with blastRadius). Players and other live
+-- Blow up `source` (an enemy or prop with blastRadius), reporting an
+-- "explosion" event. Players and other live
 -- enemies inside the radius die; enemies are thrown away from the blast.
 function blast.explode(level, source, players)
     local radius = source.blastRadius or 0
-    fx.explosion(source.x, source.y, source.w, source.h, source.image, level.statics, source:region())
-    audio.playSfx("debris.wav")
+    events.entity("explosion", source)
     for _, player in ipairs(players) do
         if not player.dead and distanceToBox(source.x, source.y, player) <= radius then
             player:die()

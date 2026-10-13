@@ -1,5 +1,5 @@
 local audio = {}
-local mathx = require("core.math")
+local mathx = require("core.mathx")
 
 -- Master volume mixers (0..1)
 audio.masterMusicVolume = 1
@@ -69,10 +69,12 @@ end
 -- Plays a short sound effect. `pan` is -1 (left) .. 1 (right), default 0 (centre).
 -- LÖVE only pans mono sources, so sound effect files must be mono.
 function audio.playSfx(name, volume, pan)
-    local source = love.audio.newSource(
-        audio.sfxPath .. "/" .. name,
-        "static"
-    )
+    return audio.playSfxFile(audio.sfxPath .. "/" .. name, volume, pan)
+end
+
+-- Like playSfx, with a full path (e.g. a level package's own sound).
+function audio.playSfxFile(path, volume, pan)
+    local source = love.audio.newSource(path, "static")
 
     -- Dynamic/temporary gain belongs to SFX rather than music.
     audio.currentSfxVolume = normalizeVolume(volume)

@@ -1,10 +1,11 @@
 -- Base prop: a carryable physics body with ground friction and a placeholder
 -- draw. Hierarchy: Entity -> Prop -> concrete props (levels define these).
-local mathx = require("core.math")
+local mathx = require("core.mathx")
 local Entity = require("core.level.entity")
 
 local Prop = setmetatable({}, { __index = Entity })
-Prop.__index = Prop
+Prop.__index = Prop -- for type scripts: setmetatable(Type, { __index = Prop })
+local PROP_META = { __index = Prop, __metatable = false } -- see ENTITY_META
 
 Prop.CONFIG = {
     friction = 900,
@@ -13,13 +14,13 @@ Prop.CONFIG = {
 
 function Prop.create(class, x, y, options)
     options = options or {}
-    local self = Entity.new(class or Prop, x, y, options)
+    local self = Entity.new(class or PROP_META, x, y, options)
     self.name = options.name or "prop"
     return self
 end
 
 function Prop.new(x, y, options)
-    return Prop.create(Prop, x, y, options)
+    return Prop.create(nil, x, y, options)
 end
 
 function Prop:update(delta, level)

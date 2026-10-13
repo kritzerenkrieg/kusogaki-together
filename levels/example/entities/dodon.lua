@@ -5,7 +5,7 @@ Dodon.__index = Dodon
 
 Dodon.name = "dodon"
 Dodon.kind = "enemy" -- walks on statics, props and other enemies; stomp or kick to kill it, touch to die
-Dodon.assetPath = "levels/example/assets/dodon.png" -- 2 walk frames side by side
+Dodon.assetPath = "assets/dodon.png" -- 2 walk frames side by side
 Dodon.w, Dodon.h = 16, 16 -- one frame of the sheet
 Dodon.speed = 40           -- walk speed (px/s)
 Dodon.frameTime = 0.2      -- seconds per walk frame

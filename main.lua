@@ -1,3 +1,8 @@
+if SIM_TEST then
+    require("tests.sim_test") -- exits when done; see conf.lua
+    return
+end
+
 local render = require("core.graphics.render")
 local camera = require("core.graphics.camera")
 local fx = require("core.graphics.fx")
@@ -27,6 +32,10 @@ end
 
 function love.keypressed(key)
     sceneEngine.keypressed(key)
+end
+
+function love.gamepadpressed(joystick, button)
+    sceneEngine.gamepadpressed(joystick, button)
 end
 
 function love.mousemoved(x, y)

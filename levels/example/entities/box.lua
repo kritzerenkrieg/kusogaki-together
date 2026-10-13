@@ -5,7 +5,7 @@ Box.__index = Box
 
 Box.name = "box"
 Box.kind = "prop" -- "prop": dynamic body; "hazard": static, hurts on touch
-Box.assetPath = "levels/example/assets/box.png"
+Box.assetPath = "assets/box.png"
 Box.w, Box.h = 16, 16 -- collision size (px), owned by the type
 Box.image = nil
 

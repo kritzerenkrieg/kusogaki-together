@@ -20,8 +20,9 @@ local function contactNormal(a, b, dx, dy, overlapX, overlapY)
 end
 
 -- Rule: a body whose corrected position would sit inside a static gets no share
--- of the correction, so the other body takes all of it. Of two free bodies, the
--- player absorbs the correction, so the prop's motion is not dragged by walking.
+-- of the correction, so the other body takes all of it. Of a free player and a
+-- free prop, the player absorbs the correction, so the prop's motion is not
+-- dragged by walking; two players share it by mass.
 -- Returns the separation weight for a and b (inverse masses, zero = not moved).
 local function separationShares(a, b, normalX, normalY, penetration, inverseA, inverseB, statics)
     local sepA, sepB = inverseA, inverseB
@@ -33,7 +34,7 @@ local function separationShares(a, b, normalX, normalY, penetration, inverseA, i
             sepB = 0
         end
     end
-    if sepA > 0 and sepB > 0 then
+    if sepA > 0 and sepB > 0 and not (a.isPlayer and b.isPlayer) then
         if a.isPlayer then
             sepB = 0
         elseif b.isPlayer then

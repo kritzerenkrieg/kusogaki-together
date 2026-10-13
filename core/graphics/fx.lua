@@ -1,6 +1,6 @@
 local render = require("core.graphics.render")
 local camera = require("core.graphics.camera")
-local mathx = require("core.math")
+local mathx = require("core.mathx")
 local physics = require("core.physics")
 
 local fx = {}

@@ -1,6 +1,6 @@
 local render = require("core.graphics.render")
 local text = require("core.text")
-local mathx = require("core.math")
+local mathx = require("core.mathx")
 local sceneEngine = require("core.scenes")
 local audio = require("core.audio")
 

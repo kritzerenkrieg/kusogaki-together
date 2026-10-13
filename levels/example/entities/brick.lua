@@ -5,7 +5,7 @@ Brick.__index = Brick
 
 Brick.name = "brick"
 Brick.kind = "block" -- static like a hazard, but touching it is not fatal
-Brick.assetPath = "levels/example/assets/brick.png"
+Brick.assetPath = "assets/brick.png"
 Brick.w, Brick.h = 16, 16 -- collision size (px), owned by the type
 Brick.image = nil
 

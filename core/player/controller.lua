@@ -1,26 +1,24 @@
--- Player controls: arrow-key movement, Z jump, X kick (or throw while carrying).
-local mathx = require("core.math")
+-- Player controls from the player's input frame (core/input.lua): move, jump,
+-- kick (or throw while carrying).
+local mathx = require("core.mathx")
 local config = require("core.player.config")
 local state = require("core.player.state")
 local carry = require("core.player.carry")
 local physics = require("core.physics")
 
-local CONFIG, KEYS = config.CONFIG, config.KEYS
+local CONFIG = config.CONFIG
 local controller = {}
 
--- Read a key through the injected adapter, falling back to the real keyboard.
-local function isDown(self, key)
-    if self.input then
-        return self.input.isDown(key) == true
-    end
-    return love.keyboard.isDown(key)
+-- Is `action` held in this tick's input frame? No frame means nothing held.
+local function isDown(self, action)
+    return self.input ~= nil and self.input[action] == true
 end
 
 -- Key state for this frame: pressed/released edges for jump, kick and hold.
 function controller.readKeys(self)
-    local jumpDown = isDown(self, KEYS.jump)
-    local kickDown = isDown(self, KEYS.kick)
-    local holdDown = isDown(self, KEYS.hold)
+    local jumpDown = isDown(self, "jump")
+    local kickDown = isDown(self, "kick")
+    local holdDown = isDown(self, "hold")
     local prev = self.prevKeys
     local edges = {
         jumpPressed  = jumpDown and not prev.jump,
@@ -33,11 +31,11 @@ function controller.readKeys(self)
     return edges
 end
 
--- Horizontal movement from the arrow keys, with acceleration and friction.
+-- Horizontal movement from left/right, with acceleration and friction.
 function controller.horizontal(self, delta)
     local move = 0
-    if isDown(self, KEYS.left) then move = move - 1 end
-    if isDown(self, KEYS.right) then move = move + 1 end
+    if isDown(self, "left") then move = move - 1 end
+    if isDown(self, "right") then move = move + 1 end
 
     if move ~= 0 then
         self.facing = move

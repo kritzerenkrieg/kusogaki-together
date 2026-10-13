@@ -1,8 +1,7 @@
 -- Enemy rules. See ARCHITECTURE.md (Level rules: enemies).
 local physics = require("core.physics")
-local fx = require("core.graphics.fx")
 local render = require("core.graphics.render")
-local audio = require("core.audio")
+local events = require("core.level.events")
 local playerConfig = require("core.player.config")
 local blast = require("core.level.blast")
 
@@ -90,38 +89,34 @@ local function wasAbove(player, enemy)
     return player.prevY + player.h / 2 <= enemy.y - enemy.h / 2 + 2
 end
 
-function enemies.touchPlayer(level, player)
+-- Players in join order: once one stomps an enemy, it is no longer live, so a
+-- second player touching it in the same step is safe.
+function enemies.touchPlayers(level, players)
     for i = #level.enemies, 1, -1 do
         local enemy = level.enemies[i]
-        if isLive(enemy) and not player.dead and physics.overlaps(player, enemy) then
-            if player.falling and wasAbove(player, enemy) and enemy:onStomp(player) then
-                enemy.killedBy = "stomp"
-                player:bounce()
-            elseif player.kickGrace <= 0 and enemy:onTouch(player) then
-                player:die()
+        for _, player in ipairs(players) do
+            if isLive(enemy) and not player.dead and physics.overlaps(player, enemy) then
+                if player.falling and wasAbove(player, enemy) and enemy:onStomp(player) then
+                    enemy.killedBy = "stomp"
+                    player:bounce()
+                elseif player.kickGrace <= 0 and enemy:onTouch(player) then
+                    player:die()
+                end
             end
         end
     end
 end
 
--- Remove dead and detonated enemies, leaving a corpse or an explosion.
+-- Remove dead and detonated enemies, reporting a "corpse" or an explosion.
 function enemies.removeDead(level, players)
     for i = #level.enemies, 1, -1 do
         local enemy = level.enemies[i]
         if enemy.detonated then
-            table.remove(level.enemies, i)
+            level:removeEntity(enemy)
             blast.explode(level, enemy, players)
-        elseif enemy.killedBy == "stomp" then
-            table.remove(level.enemies, i)
-            fx.flatten(enemy.x, enemy.y, enemy.w, enemy.h, enemy.image, enemy:region())
-            audio.playSfx("hit.wav")
         elseif enemy.killedBy then
-            table.remove(level.enemies, i)
-            fx.throwAway(enemy.x, enemy.y, enemy.w, enemy.h, enemy.image, enemy:region(),
-                enemy.kickVx, enemy.kickVy)
-            if enemy.killedBy ~= "blast" then -- the explosion already has its sound
-                audio.playSfx("hit.wav")
-            end
+            level:removeEntity(enemy)
+            events.entity("corpse", enemy, { cause = enemy.killedBy, vx = enemy.kickVx, vy = enemy.kickVy })
         end
     end
 end

@@ -133,5 +133,48 @@ do
         not overlapsAnyStatic(bodyUnder, { ceiling }), ("x %.3f"):format(bodyUnder.x))
 end
 
+-- Players against players ---------------------------------------------------
+-- Like `step`, but records prevY as the player update does (one-way landing
+-- needs it).
+local function stepPlayers(bodies, statics, frames)
+    for _ = 1, frames do
+        for _, b in ipairs(bodies) do
+            b.prevY = b.y
+            b.vy = math.min(b.vy + physics.gravity * DT, physics.maxFall)
+            physics.moveBody(b, statics, DT)
+        end
+        physics.resolveBodyCollisions(bodies, statics)
+    end
+end
+
+-- A player dropped onto another player stands on their head.
+do
+    local lower = body(200, 330, 12, 24, { isPlayer = true })
+    local upper = body(200, 280, 12, 24, { isPlayer = true })
+    stepPlayers({ lower, upper }, { FLOOR }, 120)
+    check("player lands on another player's head", math.abs(upper.y - 306) < 0.5,
+        ("y %.2f"):format(upper.y))
+    check("player on a head is grounded", upper.onGround == true)
+    check("player under a player stays on the floor", math.abs(lower.y - 330) < 0.05,
+        ("y %.2f"):format(lower.y))
+    -- The same with the join order reversed (pair order must not matter).
+    local lower2 = body(200, 330, 12, 24, { isPlayer = true })
+    local upper2 = body(200, 280, 12, 24, { isPlayer = true })
+    stepPlayers({ upper2, lower2 }, { FLOOR }, 120)
+    check("head landing does not depend on pair order", math.abs(upper2.y - upper.y) < 0.05,
+        ("y %.2f vs %.2f"):format(upper2.y, upper.y))
+end
+
+-- Two players walking into each other share the push and end up apart.
+do
+    local a = body(200, 330, 12, 24, { isPlayer = true })
+    local b = body(209, 330, 12, 24, { isPlayer = true })
+    stepPlayers({ a, b }, { FLOOR }, 1)
+    check("overlapping players are separated", b.x - a.x >= 12 - 0.01,
+        ("gap %.2f"):format(b.x - a.x))
+    check("overlapping players share the push",
+        math.abs((a.x - 200) + (b.x - 209)) < 0.05, ("moved %.2f %.2f"):format(a.x - 200, b.x - 209))
+end
+
 print(failures == 0 and "all physics checks passed" or (failures .. " physics check(s) failed"))
 os.exit(failures == 0 and 0 or 1)

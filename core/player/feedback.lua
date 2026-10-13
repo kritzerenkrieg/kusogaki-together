@@ -1,4 +1,4 @@
--- Sound and camera feedback for player events (see player.onEvent).
+-- Sound and camera feedback for player events (called by core/graphics/present.lua).
 local audio = require("core.audio")
 local camera = require("core.graphics.camera")
 

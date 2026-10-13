@@ -1,5 +1,6 @@
--- Props as one-way platforms for the player: the player lands on a prop's top
--- face when falling onto it, and never snaps into a spot occupied by another body.
+-- Props, and other players, as one-way platforms for the player: the player
+-- lands on the top face when falling onto it, and never snaps into a spot
+-- occupied by another body.
 local geometry = require("core.physics.geometry")
 
 local oneway = {}
@@ -28,12 +29,19 @@ local function landingIsClear(player, platform, platformTop, bodies)
     return true
 end
 
--- Rule: props act as one-way platforms for the player. Returns the pair as
--- (player, other) when exactly one of a/b is the player, otherwise nil.
+-- Rule: props act as one-way platforms for the player, and so does a player
+-- for another player (standing on someone's head). Returns the pair as
+-- (player, platform): for two players the higher one is the player. nil when
+-- neither is a player.
 function oneway.playerPair(a, b)
-    if a.isPlayer and not b.isPlayer then
+    if a.isPlayer and b.isPlayer then
+        if a.y <= b.y then
+            return a, b
+        end
+        return b, a
+    elseif a.isPlayer then
         return a, b
-    elseif b.isPlayer and not a.isPlayer then
+    elseif b.isPlayer then
         return b, a
     end
     return nil

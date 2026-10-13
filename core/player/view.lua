@@ -64,7 +64,8 @@ function view.draw(self)
 
     local column, row = frameFor(self)
     local scaleX = self.facing < 0 and -1 or 1
-    love.graphics.setColor(1, 1, 1, 1)
+    local tint = config.TINTS[self.id] or config.TINTS[1]
+    love.graphics.setColor(tint[1], tint[2], tint[3], 1)
     love.graphics.draw(
         spriteSheet,
         getSpriteQuad(column, row),

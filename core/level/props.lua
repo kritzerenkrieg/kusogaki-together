@@ -9,7 +9,7 @@ function props.removeDetonated(level, players)
     for i = #level.props, 1, -1 do
         local prop = level.props[i]
         if prop.detonated then
-            table.remove(level.props, i)
+            level:removeEntity(prop)
             for _, player in ipairs(players) do
                 if player.carrying == prop then
                     player.carrying = nil

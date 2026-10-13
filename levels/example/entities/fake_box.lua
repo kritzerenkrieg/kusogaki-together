@@ -7,7 +7,7 @@ FakeBox.__index = FakeBox
 
 FakeBox.name = "box" -- shown as a plain box (e.g. the HUD's CARRY), to keep the secret
 FakeBox.kind = "prop"
-FakeBox.assetPath = "levels/example/assets/box.png"
+FakeBox.assetPath = "assets/box.png"
 FakeBox.w, FakeBox.h = 16, 16
 FakeBox.fuse = 3            -- seconds from the first grab to the explosion
 FakeBox.firstBeep = 0.5     -- seconds between beeps when the fuse is lit

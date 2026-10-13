@@ -1,10 +1,13 @@
 -- Base class for entities defined by an individual level.
 -- Shared collider, mass, movement and rendering live here.
 local physics = require("core.physics")
-local audio = require("core.audio")
+local events = require("core.level.events")
 
 local Entity = {}
-Entity.__index = Entity
+Entity.__index = Entity -- for type scripts: setmetatable(Type, { __index = Entity })
+-- Instances made without a type use this instead, so `entity.__index` cannot
+-- hand a script the real class.
+local ENTITY_META = { __index = Entity, __metatable = false }
 
 function Entity.loadImage(path)
     local image = love.graphics.newImage(path)
@@ -29,7 +32,7 @@ end
 function Entity.new(class, x, y, options)
     options = options or {}
     local image = options.image
-    local self = setmetatable({}, class or Entity)
+    local self = setmetatable({}, class or ENTITY_META)
 
     self.x, self.y = x or 0, y or 0
     self.image = image
@@ -89,11 +92,16 @@ function Entity:region()
     return { x = 0, y = 0, w = self.image:getWidth(), h = self.image:getHeight() }
 end
 
--- Play a sound effect from assets/audio/sfx. Entity scripts have no audio
--- access of their own, so they go through this; only plain "name.wav" is allowed.
+-- Play a sound effect (reported as an "sfx" event): the level package's
+-- assets/<name> if it has one, else the engine's assets/audio/sfx/<name>.
+-- Entity scripts have no audio access of their own, so they go through this;
+-- only plain "name.wav|ogg|mp3" names are allowed.
+local SFX_EXTENSIONS = { wav = true, ogg = true, mp3 = true }
+
 function Entity:playSfx(name)
-    if type(name) == "string" and name:match("^[%w_]+%.wav$") then
-        audio.playSfx(name)
+    local extension = type(name) == "string" and name:match("^[%w_]+%.(%w+)$")
+    if extension and SFX_EXTENSIONS[extension] then
+        events.entity("sfx", self, { name = name })
     end
 end
 

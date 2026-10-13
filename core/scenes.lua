@@ -43,6 +43,13 @@ function sceneEngine.keypressed(key)
     end
 end
 
+function sceneEngine.gamepadpressed(joystick, button)
+    local scene = sceneEngine.scenes[sceneEngine.current]
+    if scene and scene.gamepadpressed then
+        scene.gamepadpressed(joystick, button)
+    end
+end
+
 -- Pointer input, in canvas coordinates. mousepressed may return a scene name
 -- like keypressed.
 function sceneEngine.mousemoved(x, y)

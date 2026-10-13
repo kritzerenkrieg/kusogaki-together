@@ -15,10 +15,16 @@ player.KEYS = config.KEYS
 player.CONFIG = CONFIG
 player.load = view.load
 
+-- Instances look methods up in `methods` (filled at the end of this file), not
+-- in the module: scripts get players, and the module also holds shared tuning
+-- (CONFIG, KEYS) that a level must not change for later levels.
+local methods = {}
+local PLAYER_META = { __index = methods, __metatable = false }
+
 -- Create a player at the given center position.
 -- Collision size comes from player.CONFIG.width / player.CONFIG.height.
 function player.new(x, y)
-    local self = setmetatable({}, { __index = player })
+    local self = setmetatable({}, PLAYER_META)
     self.x, self.y = x or 0, y or 0
     self.w, self.h = CONFIG.width, CONFIG.height
     self.mass = physics.massFromSize(self.w, self.h)
@@ -26,8 +32,8 @@ function player.new(x, y)
     self.vx, self.vy = 0, 0
     self.facing = 1
     state.init(self)
-    self.input = nil      -- optional { isDown = function(key) } adapter (tests)
-    self.onEvent = nil    -- optional callback(name, player) for scene feedback
+    self.id = nil         -- 1..5, set by Level:addPlayer
+    self.input = nil      -- this tick's input frame (core/input.lua); the scene sets it
     return self
 end
 
@@ -100,6 +106,12 @@ end
 
 function player:draw()
     view.draw(self)
+end
+
+for name, value in pairs(player) do
+    if type(value) == "function" and name ~= "new" and name ~= "load" then
+        methods[name] = value
+    end
 end
 
 return player
