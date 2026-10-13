@@ -1,8 +1,8 @@
 # Development Phase
 
-Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox) and `ARCHITECTURE.md` (code layout and rules).
+Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
 
-Last updated: 2026-10-13.
+Last updated: 2026-10-13 (steps 2 and 3 done).
 
 ---
 
@@ -38,7 +38,7 @@ Last updated: 2026-10-13.
 - **Size caps:** 16 MB on `string.rep`, `gsub` and `table.concat`, in the global libraries, so method calls are covered too.
 - **Pattern limits** while scripts run: at most 8 quantifiers and 256 KB of subject.
 - **Memory checks** every 20 instructions inside script calls.
-- **Protected phases** (`script.protect` / `level:protect`): each step, draw and event presentation limits script code wherever it runs (stored functions, metamethods). A failure faults the level: a "This level stopped" screen with R restart / ESC menu instead of a crash.
+- **Protected phases** (`script.protect` / `level:protect`): each step, draw and event presentation limits script code wherever it runs (stored functions, metamethods). A failure faults the level: a "This level stopped" screen with restart / ESC menu instead of a crash.
 - **Reachability audit** in `tests/sim_test.lua`. It found and fixed two leaks:
   - `obj.__index` exposed engine classes (fixed with separate protected metatables: `LEVEL_META`, `RANDOM_META`, `ENTITY_META`, `PROP_META`, methods-only `PLAYER_META`);
   - players exposed the shared tuning tables `CONFIG` and `KEYS`.
@@ -47,24 +47,42 @@ Last updated: 2026-10-13.
 
 ---
 
+### Publishing-safety plan, step 2: watchdog (done, option A)
+- `core/watchdog.lua` + `core/watchdog_thread.lua`: `love.update` beats every frame; the gameplay scene says which level runs (`watchdog.enter(root)` before loading, `leave()` on exit).
+- After 8 s without a beat during a level, the thread writes `watchdog_report.json` and ends the process with `_exit`.
+- The next launch shows why the game closed. A downloaded level (`online/<sha256>`) goes on `blocked_levels.json`; `levelpack.mount` and the loader refuse it. Bundled and local levels are reported, not blocked.
+- Tested in `tests/sim_test.lua` (with a 0.3 s timeout, no exit). The real exit was checked once by hand with a scratch game: a true `while true do end` freeze ended with exit code 3 after 0.77 s (0.5 s timeout), and the next launch blocked the level.
+- Option B (simulation in its own thread) still belongs to Phase 2.
+
+### Publishing-safety plan, step 3: flexibility (done)
+Scripts get these directly on the level (reference: `MODDING.md`):
+- **Custom input actions:** `level.json` `"actions"` (key per keyboard layout, gamepad buttons, stick directions, triggers; at most 16). `player.pressed` / `player.released` edges; `input.pack` / `unpack` give a bit mask for the network.
+- **Replaceable player controller:** `level.playerController` or `player.controller` (`update`, optional `draw`); the platformer is the default and stays callable (`player:update`, `player:animate`).
+- **Runtime spawning:** `level:spawnEntity(type, x, y, def)`. Ids continue after the placements; it emits a `spawned` event; snapshots carry `spawnedType`.
+- **Camera control:** `level.camera` (`follow` players, screens, any body or fixed; `zoom`; `clamp`), on both axes.
+- **Gravity:** `level.gravity` / `maxFall` (from `level.json`, changeable) and `body.gravityScale`.
+- **Gamemode hooks:** the step is `level.stages`, a per-level list of named stages that scripts add, remove, replace or wrap; `level:finish(outcome, message)` ends the level with a result screen. Level script hooks: `load`, `playerJoined`, `update`, `message`.
+- **World drawing:** `drawBehind` / `drawWorld` / `drawHud` hooks and `entity:draw(ui)`; `ui` gained circles, lines, images, sprites and `view()`.
+- **Script network state:** `level.net`, `player.net` and the camera/gravity/outcome go in snapshots; `level:send(name, data)` messages reach every machine's `message` hook. Everything sent must be plain data (`netstate.isPlain`).
+- **Example:** `levels/topdown` is a top-down coin race with zero gravity, its own controller, a dash action, spawned coins, a magnet stage, a win condition and popups. Play it with `love2d . --level topdown`.
+- **Checks:** the audit now runs on both levels. Neither the example level's behaviour baseline nor the per-tick cost changed.
+
+### Players kick and carry each other (done)
+Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carried player cannot get away (by design) until dropped, thrown, or someone dies. Rules in `ARCHITECTURE.md` (Physics rules); checks in `tests/sim/players.lua`.
+
+### Goal zone, respawn count, restart vote (done)
+- Example level: `levels/example/scripts/goal.lua` highlights a zone past the flag pole; the level is won when every player is alive inside it.
+- `player.respawns` survives restarts and resets on a win. Restarting is a toggleable vote (more than half, then a 5 s countdown). See `ARCHITECTURE.md` (Local players); checks in `tests/sim/scene.lua` and `tests/sim/features.lua`.
+
 ## Next
 
-### Publishing-safety plan, step 2: watchdog (decision pending)
-A built-in C function that hangs can't be interrupted in-process. Two options were proposed:
-- **A. Light watchdog (recommended now, small):** a `love.thread` expects a heartbeat every frame. After about 5 s frozen during a level, it writes the level's root/hash to a "blocked" file in the save directory and the game exits. The next launch tells the player the level was blocked and refuses it; later this gets reported to the server.
-- **B. Simulation in a worker thread (large):** the main thread only draws and can drop a frozen session. This is the same split as host and client, so it belongs to Phase 2.
+**Phase 2: LAN netcode over direct IP** (`NETWORKING.md`, Netcode). Open questions to settle first:
+- predicting a player who uses a custom (script) controller: the client would run that script code for its own player;
+- the "view mode" for scripts on clients (draw hooks and `message` only).
 
-The owner has not yet confirmed A. Ask, then implement.
-
-### Publishing-safety plan, step 3: flexibility (engine features exposed directly to scripts)
-- **Custom input actions** declared by the level package (not only the 5 fixed ones); the input mask grows from them.
-- **Replaceable player controller:** the platformer controller becomes the default.
-- **Runtime spawning:** `level:spawn(type, x, y)` with host-assigned ids, so the network can sync spawns.
-- **Camera control:** follow any body, both axes, zoom, fixed screens.
-- **Gravity per level and per body:** zero gravity for top-down.
-- **Gamemode hooks** at each stage of `Level:update`, plus win/lose.
-- **World-space drawing hooks,** driven by synced state only.
-- **Script network state:** script-declared `netFields` and a message API, with docs on host, client and shared code.
+Also still open from the earlier work:
+- Phase 1 leftovers for network play: camera, HUD and sounds for the *local* player only;
+- a `restart{seed}` event.
 
 ### Roadmap after that (from `NETWORKING.md`)
 | Phase | Scope |
@@ -83,10 +101,18 @@ The owner has not yet confirmed A. Ask, then implement.
 - **Run every test:** `sh tests/run.sh`. It runs the physics, sandbox and JSON suites under `luajit` and `lua`, then the headless LÖVE suite (`love2d . --sim-test`). `lua5.1` and `luajit` are installed system-wide.
 - **Behaviour baseline:** the scripted run in `tests/sim_test.lua` should keep giving
   - 1 player: furthest x 922, 5 deaths, enemies 13 → 12;
-  - 3 players: 869, 12 deaths, 13 → 10;
-  - 5 players: 868, 19 deaths, 13 → 10.
+  - 3 players: 921, 12 deaths, 13 → 10;
+  - 5 players: 958, 19 deaths, 13 → 10.
+
+  (The 3- and 5-player numbers changed when players learned to kick and carry each other; the scripted inputs now hit each other.)
 
   If those numbers move, the change altered gameplay.
 - **Speed baseline:** about 0.5 ms per tick with the protections on (≈0.23 ms without).
-- **Not committed:** all of Phase 0 and step 1 are uncommitted (about 55 changed or new files on top of `7c7685e v0.0.8`). The staged `assets/audio/music/level1.mp3` and `level3.wav` were already staged before this work and were left as they were.
-- **Not yet checked in a real window:** effects, sound and shake via events; package-relative images; the "This level stopped" screen; gamepad joining.
+- **Commits:** Phase 0 and step 1 are in `a91b41f v0.1.0`. Steps 2 and 3 are uncommitted.
+- **Not yet checked in a real window:**
+  - effects, sound and shake via events;
+  - package-relative images;
+  - the "This level stopped" and finish screens;
+  - gamepad joining;
+  - the camera zoom and vertical follow (`--level topdown`);
+  - the watchdog notice on the next launch.

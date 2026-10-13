@@ -34,6 +34,10 @@ function player.new(x, y)
     state.init(self)
     self.id = nil         -- 1..5, set by Level:addPlayer
     self.input = nil      -- this tick's input frame (core/input.lua); the scene sets it
+    self.pressed = {}     -- actions pressed this tick (set by the level's "input" stage)
+    self.released = {}    -- actions released this tick
+    self.net = {}         -- script state synced to clients (plain data; NETWORKING.md)
+    self.controller = nil -- custom controller for this player (see Level), or the level's/default
     return self
 end
 
@@ -70,19 +74,24 @@ function player:update(delta, level)
     self.contacts = {}
 
     if self.dead then
-        state.updateDead(self, delta)
+        state.updateDead(self, delta, level)
         return
     end
 
     local edges = controller.readKeys(self)
     state.tick(self, delta)
+    if self.held then -- carried by another player: helpless until dropped or thrown
+        self.hovered = nil
+        self.falling, self.movingUp = false, false -- a carried player stomps nothing
+        return
+    end
     controller.horizontal(self, delta)
     controller.jump(self, edges)
     carry.update(self, edges, level)
     controller.kickStart(self, edges, level)
 
     -- Gravity + level collision
-    self.vy = math.min(self.vy + physics.gravity * delta, physics.maxFall)
+    physics.fall(self, level, delta)
     local wasGrounded = self.onGround
     local fallSpeed = self.vy
     -- A jump that is still rising; blocks it bumps from below may break. Kicks
@@ -106,6 +115,13 @@ end
 
 function player:draw()
     view.draw(self)
+end
+
+-- Advance the idle/run animation clocks and the displayed state. The default
+-- update does this; a custom controller (see Level, player controllers) calls
+-- it to keep the platformer sprite animating.
+function player:animate(delta)
+    state.animate(self, delta)
 end
 
 for name, value in pairs(player) do

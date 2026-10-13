@@ -58,7 +58,7 @@ function Entity:update(delta, level)
     end
 
     delta = math.min(delta, 1 / 30)
-    self.vy = math.min(self.vy + physics.gravity * delta, physics.maxFall)
+    physics.fall(self, level, delta) -- level gravity times self.gravityScale
     self:move(delta, level)
 end
 

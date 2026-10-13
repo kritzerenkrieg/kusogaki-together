@@ -8,6 +8,7 @@ return {
         jump  = "z",
         kick  = "c",
         hold  = "x",
+        restart = "r", -- toggles this player's restart vote
     },
 
     CONFIG = {
@@ -31,6 +32,9 @@ return {
         kickLift       = -90,  -- vertical impulse applied to kicked props
         enemyKickPush  = 260,  -- horizontal launch of a kicked enemy (px/s)
         enemyKickLift  = -90,  -- vertical launch of a kicked enemy (px/s)
+        playerKickPush = 220,  -- horizontal knockback of a kicked player (px/s)
+        playerKickLift = -160, -- upward knockback of a kicked player (px/s)
+        knockbackTime  = 0.3,  -- after a kick or throw, a player's own input cannot steer (s)
         throwSpeed     = 260,  -- forward speed of a thrown prop
         throwArc       = -140, -- upward speed of a thrown prop
         grabForward    = 20,   -- distance in front of the player for the grab box

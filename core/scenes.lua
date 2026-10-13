@@ -7,10 +7,15 @@ function sceneEngine.register(name, scene)
     sceneEngine.scenes[name] = scene
 end
 
--- Make `name` the active scene. A scene may define enter(), called on entry.
+-- Make `name` the active scene. A scene may define enter(), called on entry,
+-- and exit(), called when another scene takes over.
 function sceneEngine.start(name)
     local scene = name and sceneEngine.scenes[name]
     if scene then
+        local previous = sceneEngine.scenes[sceneEngine.current]
+        if previous and previous ~= scene and previous.exit then
+            previous.exit()
+        end
         sceneEngine.current = name
         if scene.enter then
             scene.enter()

@@ -17,8 +17,12 @@ function state.init(self)
     self.kickAnimationTime = nil
     self.dead = false     -- true from death until respawn
     self.deadTime = 0     -- seconds since death
+    self.respawns = 0     -- times respawned; kept across restarts, reset on a win (scenes/gameplay.lua)
     self.spawnX, self.spawnY = self.x, self.y
-    self.carrying = nil   -- prop currently held (C)
+    self.carrying = nil   -- prop, enemy or player currently held (C)
+    self.held = false     -- carried by another player (heldBy); helpless until let go
+    self.heldBy = nil
+    self.knockback = 0    -- time left when input cannot steer (kicked or thrown) (s)
     self.hovered = nil    -- grabbable prop highlighted in front of the player
     self.coyote = 0
     self.jumpBuffer = 0
@@ -40,6 +44,7 @@ function state.tick(self, delta)
     self.jumpBuffer = math.max(0, self.jumpBuffer - delta)
     self.kickCooldown = math.max(0, self.kickCooldown - delta)
     self.kickGrace = math.max(0, self.kickGrace - delta)
+    self.knockback = math.max(0, self.knockback - delta)
     self.kickTime = math.max(0, self.kickTime - delta)
     if self.kickAnimationTime then
         self.kickAnimationTime = self.kickAnimationTime + delta
@@ -57,7 +62,12 @@ function state.die(self)
     end
     if self.carrying then
         self.carrying.held = false
+        self.carrying.heldBy = nil
         self.carrying = nil
+    end
+    if self.heldBy then -- carried: the carrier's hands are empty again
+        self.heldBy.carrying = nil
+        self.held, self.heldBy = false, nil
     end
     self.dead = true
     self.deadTime = 0
@@ -77,13 +87,14 @@ function state.respawn(self)
     self.facing = 1
     self.onGround = false
     self.jumping = false
+    self.respawns = self.respawns + 1
     state.emit(self, "respawn")
 end
 
 -- Movement while dead: gravity only, then respawn after the delay.
-function state.updateDead(self, delta)
+function state.updateDead(self, delta, level)
     self.deadTime = self.deadTime + delta
-    self.vy = math.min(self.vy + physics.gravity * delta, physics.maxFall)
+    physics.fall(self, level, delta)
     self.y = self.y + self.vy * delta
     if self.deadTime >= CONFIG.respawnDelay then
         state.respawn(self)

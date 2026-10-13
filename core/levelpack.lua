@@ -3,6 +3,8 @@
 -- root like a bundled "levels/<name>" (see core/level/loader.lua).
 -- Packages never mount under levels/: LÖVE searches the save directory before
 -- the game's own files, so that would let a download replace a bundled level.
+local watchdog = require("core.watchdog")
+
 local levelpack = {}
 
 local mounted = {} -- sha256 -> save-directory path of the mounted zip
@@ -22,12 +24,15 @@ end
 
 -- Mount the zip at `path` (in the save directory) after checking that its
 -- sha256 is `expectedHash`. Returns the package root ("online/<sha256>"), or
--- nil and an error message.
+-- nil and an error message. A package the watchdog blocked is refused.
 function levelpack.mount(path, expectedHash)
     if type(expectedHash) ~= "string" or not expectedHash:match("^%x+$") or #expectedHash ~= 64 then
         return nil, "invalid package hash"
     end
     expectedHash = expectedHash:lower()
+    if watchdog.isBlocked(expectedHash) then
+        return nil, "level blocked: it froze the game before"
+    end
     local root = "online/" .. expectedHash
     if mounted[expectedHash] then
         return root

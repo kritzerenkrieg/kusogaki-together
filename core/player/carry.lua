@@ -1,5 +1,6 @@
--- Carrying props: grab (C), drop, throw (X while carrying), and keeping the held
--- prop at the player's hand. A held prop has no physics of its own.
+-- Carrying props, enemies and other players: grab (C), drop, throw (X while
+-- carrying), and keeping the held body at the player's hand. A held body has no
+-- physics of its own. A carried player is helpless until dropped or thrown.
 local physics = require("core.physics")
 local config = require("core.player.config")
 local state = require("core.player.state")
@@ -19,13 +20,22 @@ function carry.grabBox(self)
     }
 end
 
--- Nearest loose prop or live enemy overlapping the grab box, or nil.
+-- Can `self` pick up `body`? Players: alive, not held and not carrying anyone
+-- (no carry chains).
+local function grabbable(self, body)
+    if body.isPlayer then
+        return body ~= self and not body.dead and not body.held and not body.carrying
+    end
+    return not body.held and not body.killedBy
+end
+
+-- Nearest loose prop, live enemy or free player overlapping the grab box, or nil.
 local function findGrabbable(self, level)
     local box = carry.grabBox(self)
     local best, bestDist = nil, math.huge
-    for _, list in ipairs({ level.props, level.enemies }) do
+    for _, list in ipairs({ level.props, level.enemies, level.players }) do
         for _, prop in ipairs(list) do
-            if not prop.held and not prop.killedBy and physics.overlaps(box, prop) then
+            if grabbable(self, prop) and physics.overlaps(box, prop) then
                 local dx, dy = prop.x - self.x, prop.y - self.y
                 local dist = dx * dx + dy * dy
                 if dist < bestDist then
@@ -72,6 +82,11 @@ local function release(self, vx, vy, statics)
     end
     prop.held = false
     prop.vx, prop.vy = vx, vy
+    if prop.isPlayer then -- flies where it was thrown before steering again
+        prop.heldBy = nil
+        prop.onGround = false
+        prop.knockback = CONFIG.knockbackTime
+    end
     self.carrying = nil
 end
 
@@ -83,6 +98,10 @@ function carry.update(self, edges, level)
             self.carrying = target
             target.held = true
             target.vx, target.vy = 0, 0
+            if target.isPlayer then
+                target.heldBy = self
+                target.onGround = false
+            end
             state.emit(self, "grab")
         end
     end

@@ -209,6 +209,8 @@ local DEBRIS_LIFT = 180    -- upward burst speed (px/s), varied per chip
 
 local debris = {}
 
+local world -- the level effects belong to (its gravity), set by clearEffects
+
 -- Spawn chips for a block centered at (x, y) with size w x h. `statics` is the
 -- level's static list, which chips collide with while falling. `region` is the
 -- part of the image to cut chips from (pixels); default is the whole image.
@@ -258,7 +260,7 @@ function fx.updateDebris(dt)
         if chip.life >= DEBRIS_LIFE then
             table.remove(debris, i)
         else
-            chip.vy = math.min(chip.vy + physics.gravity * dt, physics.maxFall)
+            physics.fall(chip, world, dt)
             physics.moveBody(chip, chip.statics, dt)
             if chip.onGround then
                 chip.vx = mathx.approach(chip.vx, 0, 400 * dt)
@@ -536,7 +538,7 @@ function fx.updateCorpses(dt)
         elseif corpse.life >= THROW_LIFE then
             table.remove(corpses, i)
         else
-            corpse.vy = math.min(corpse.vy + physics.gravity * dt, physics.maxFall)
+            physics.fall(corpse, world, dt)
             corpse.x = corpse.x + corpse.vx * dt
             corpse.y = corpse.y + corpse.vy * dt
             corpse.rotation = corpse.rotation + corpse.spin * dt
@@ -564,7 +566,9 @@ function fx.drawCorpses()
 end
 
 -- Drop all debris, explosions and corpses, e.g. when the level is rebuilt.
-function fx.clearEffects()
+-- `level` (optional) gives the gravity chips and corpses fall with.
+function fx.clearEffects(level)
+    world = level
     debris = {}
     explosions = {}
     corpses = {}

@@ -7,6 +7,8 @@
 local json = require("core.json")
 local script = require("core.script")
 local mathx = require("core.mathx")
+local watchdog = require("core.watchdog")
+local input = require("core.input")
 local Entity = require("core.level.entity")
 local Prop = require("core.level.prop")
 
@@ -73,8 +75,10 @@ local function injectedFor(root, random)
     }
 end
 
--- Load (once per level load) the entity type script for `typeName`.
-local function loadType(root, typeName, types, random)
+-- Load (once per level) the entity type script for `typeName` into `types`
+-- and return it. Level:spawnEntity uses this for types first needed at runtime.
+function loader.loadType(root, typeName, types, random)
+    checkName("entity type", typeName, root)
     if not types[typeName] then
         local path = ("%s/entities/%s.lua"):format(root, typeName)
         local Type = script.load(path, injectedFor(root, random))
@@ -137,15 +141,76 @@ end
 local LIST_FOR_KIND = {
     hazard = "hazards", block = "blocks", enemy = "enemies", prop = "props", trigger = "triggers",
 }
+loader.LIST_FOR_KIND = LIST_FOR_KIND
+
+-- Create one entity of `Type` at (x, y) from a placement `def`. Sets the
+-- engine-owned fields `kind` and `typeName` (the caller sets `id`). Returns the
+-- entity and the name of its level list. `where` names the caller in errors.
+function loader.newEntity(Type, typeName, x, y, def, where)
+    local listName = LIST_FOR_KIND[Type.kind]
+    if not listName then
+        error(("%s: type %s has invalid kind %s"):format(where, typeName, tostring(Type.kind)), 0)
+    end
+    if type(x) ~= "number" or type(y) ~= "number" then
+        error(("%s: %s needs a numeric x and y"):format(where, typeName), 0)
+    end
+    local entity = Type.new(x, y, def) -- def: the placement, for instance data
+    if type(entity) ~= "table" then
+        error(("%s: %s.new failed: %s"):format(where, typeName, tostring(Type.scriptError)), 0)
+    end
+    entity.kind = Type.kind
+    entity.typeName = typeName
+    return entity, listName
+end
+
+-- level.json "camera": { follow = "players" | "screens" | "fixed", zoom, x, y, clamp }.
+local CAMERA_FOLLOW = { players = true, screens = true, fixed = true }
+
+local function cameraFrom(def, spawn, path)
+    def = def or {}
+    if type(def) ~= "table" then
+        error(path .. ": camera must be an object", 0)
+    end
+    local follow = def.follow or "players"
+    if not CAMERA_FOLLOW[follow] then
+        error(path .. ": camera.follow must be players, screens or fixed", 0)
+    end
+    local zoom = def.zoom or 1
+    if type(zoom) ~= "number" or zoom < 0.25 or zoom > 4 then
+        error(path .. ": camera.zoom must be a number from 0.25 to 4", 0)
+    end
+    return {
+        follow = follow ~= "fixed" and follow or nil, -- nil: stay centered on (x, y)
+        zoom = zoom,
+        x = type(def.x) == "number" and def.x or spawn.x,
+        y = type(def.y) == "number" and def.y or spawn.y,
+        clamp = def.clamp ~= false, -- keep the view inside the level
+    }
+end
+
+local function numberIn(value, low, high, name, path)
+    if value == nil then
+        return nil
+    end
+    if type(value) ~= "number" or value ~= value or value < low or value > high then
+        error(("%s: %s must be a number from %s to %s"):format(path, name, low, high), 0)
+    end
+    return value
+end
 
 -- Load and build the level package `nameOrRoot` (see loader.rootFor).
 -- options.seed seeds the level's random generator (default 1).
 -- Returns plain level data:
 -- { name, root, size, spawn, background, statics, hazards, blocks, enemies,
---   props, triggers, scripts, random }.
+--   props, triggers, scripts, random, types, nextId, gravity, maxFall, actions,
+--   camera }.
 function loader.load(nameOrRoot, options)
     options = options or {}
     local root = loader.rootFor(nameOrRoot)
+    local hash = root:match("^online/(%x+)$")
+    if hash and watchdog.isBlocked(hash) then
+        error("level blocked: it froze the game before (" .. hash .. ")", 0)
+    end
     local path = root .. "/level.json"
     local text = love.filesystem.read(path)
     if not text then
@@ -162,29 +227,24 @@ function loader.load(nameOrRoot, options)
     local random = mathx.newRandom(options.seed or 1)
     local types = {}
     local lists = { hazards = {}, blocks = {}, enemies = {}, props = {}, triggers = {} }
-    for index, def in ipairs(data.entities or {}) do
+    local placements = data.entities or {}
+    for index, def in ipairs(placements) do
         checkName("entity type", def.type, path)
-        local Type = loadType(root, def.type, types, random)
-        local listName = LIST_FOR_KIND[Type.kind]
-        if not listName then
-            error(("%s: type %s has invalid kind %s"):format(path, def.type, tostring(Type.kind)), 0)
-        end
-        local entity = Type.new(def.x, def.y, def) -- def: the placement, for instance data
-        if type(entity) ~= "table" then
-            error(("%s: %s.new failed: %s"):format(path, def.type, tostring(Type.scriptError)), 0)
-        end
+        local Type = loader.loadType(root, def.type, types, random)
+        local entity, listName = loader.newEntity(Type, def.type, def.x, def.y, def, path)
         -- Stable id: the placement's index in level.json, the same on every
-        -- load and every machine. `id` and `kind` are reserved for the engine.
+        -- load and every machine. `id`, `kind` and `typeName` are reserved for
+        -- the engine. Spawned entities continue after the placements.
         entity.id = index
-        entity.kind = Type.kind
         lists[listName][#lists[listName] + 1] = entity
     end
+    local spawn = { x = data.spawn.x, y = data.spawn.y }
 
     return {
         name = root:match("([^/]+)$"),
         root = root,
         size = data.size,
-        spawn = { x = data.spawn.x, y = data.spawn.y },
+        spawn = spawn,
         background = data.background,
         statics = loadTiles(root, data.static or {}, path),
         hazards = lists.hazards,
@@ -194,6 +254,12 @@ function loader.load(nameOrRoot, options)
         triggers = lists.triggers,
         scripts = loadScripts(root, data.scripts, path, random),
         random = random,
+        types = types,                     -- type name -> type table, loaded so far
+        nextId = #placements + 1,          -- id of the first spawned entity
+        gravity = numberIn(data.gravity, -10000, 10000, "gravity", path),
+        maxFall = numberIn(data.maxFall, 0, 100000, "maxFall", path),
+        actions = input.parseActions(data.actions, path),
+        camera = cameraFrom(data.camera, spawn, path),
     }
 end
 

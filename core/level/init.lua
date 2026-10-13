@@ -3,21 +3,31 @@
 local physics = require("core.physics")
 local loader = require("core.level.loader")
 local view = require("core.level.view")
-local enemies = require("core.level.enemies")
-local blocks = require("core.level.blocks")
-local bounds = require("core.level.bounds")
-local props = require("core.level.props")
-local triggers = require("core.level.triggers")
 local render = require("core.graphics.render")
 local ui = require("core.level.ui")
 local script = require("core.script")
 local events = require("core.level.events")
+local netstate = require("core.level.netstate")
+local stages = require("core.level.stages")
+local input = require("core.input")
 
 local Level = {}
 -- Scripts get levels, so the class must not be reachable from one: a separate,
 -- protected metatable (with `Level.__index = Level`, `level.__index` would
 -- hand out the class itself).
 local LEVEL_META = { __index = Level, __metatable = false }
+
+Level.MAX_PLAYERS = 5
+
+local callHooks = stages.callHooks
+
+-- Stage list helpers (see core/level/stages.lua).
+Level.findStage = stages.find
+Level.addStage = stages.add
+Level.removeStage = stages.remove
+Level.replaceStage = stages.replace
+
+-- ── Loading ───────────────────────────────────────────────────────────────
 
 -- Load a level package and build it, ready to run. `nameOrRoot` is a bundled
 -- level name ("example") or a package root (see loader.rootFor); options.seed
@@ -54,6 +64,26 @@ function Level.load(nameOrRoot, options)
             self.byId[entity.id] = entity
         end
     end
+
+    -- What scripts can change to reshape the game (ARCHITECTURE.md, Level):
+    self.types = data.types     -- entity types loaded so far (Level:spawnEntity loads more)
+    self.nextId = data.nextId   -- id of the next spawned entity
+    self.gravity = data.gravity or physics.gravity -- px/s^2; 0 floats everything
+    self.maxFall = data.maxFall or physics.maxFall
+    self.actions = data.actions -- custom input actions (core/input.lua)
+    self.actionNames = input.names(data.actions)
+    self.camera = data.camera   -- { follow, zoom, x, y, clamp }; see camera.frame
+    self.stages = stages.defaults()
+    self.playerController = nil -- custom controller for every player (nil: platformer)
+    self.net = {}               -- level script state synced to clients (plain data)
+    self.finished = nil         -- { outcome, message } once Level:finish was called
+
+    callHooks(self, "load", self)
+    for _, hooks in ipairs(self.scripts) do
+        if hooks.scriptDisabled then
+            error(("level script failed in load: %s"):format(hooks.scriptError), 0)
+        end
+    end
     return self
 end
 
@@ -63,19 +93,39 @@ function Level:get(id)
     return self.byId[id]
 end
 
-Level.MAX_PLAYERS = 5
-
--- Add a player to the level. Its id is its join slot (1..MAX_PLAYERS).
+-- Add a player to the level. Its id is its join slot (1..MAX_PLAYERS). Level
+-- scripts' playerJoined(player, level) hooks run (under script limits).
 function Level:addPlayer(player)
     assert(#self.players < Level.MAX_PLAYERS, "level is full")
     self.players[#self.players + 1] = player
     player.id = #self.players
+    self:protect(callHooks, self, "playerJoined", player, self)
     return player
 end
 
-local LIST_FOR_KIND = {
-    hazard = "hazards", block = "blocks", enemy = "enemies", prop = "props", trigger = "triggers",
-}
+-- Add an entity of type `typeName` (entities/<typeName>.lua in this package)
+-- at (x, y) while the level runs. `def` is its placement ({ ... } fields the
+-- type reads in new; plain data). Spawned entities get ids after the
+-- placements', in spawn order: in network play only the host spawns, and
+-- clients learn about it from the "spawned" event and snapshots. Returns the
+-- entity.
+function Level:spawnEntity(typeName, x, y, def)
+    def = def or {}
+    netstate.checkPlain(def, "spawn placement")
+    local Type = loader.loadType(self.root, typeName, self.types, self.random)
+    local entity, listName = loader.newEntity(Type, typeName, x, y, def, "spawn")
+    entity.id = self.nextId
+    entity.spawned = true
+    self.nextId = self.nextId + 1
+    local list = self[listName]
+    list[#list + 1] = entity
+    if entity.kind == "hazard" or entity.kind == "block" then
+        self.statics[#self.statics + 1] = entity
+    end
+    self.byId[entity.id] = entity
+    events.emit({ type = "spawned", id = entity.id, typeName = typeName, x = x, y = y, def = def })
+    return entity
+end
 
 local function removeFrom(list, item)
     for i, other in ipairs(list) do
@@ -90,13 +140,43 @@ end
 -- statics, for hazards and blocks) and out of byId. It is marked `removed`.
 -- Lists are changed in place, so every holder of them sees the change.
 function Level:removeEntity(entity)
-    removeFrom(self[LIST_FOR_KIND[entity.kind]], entity)
+    removeFrom(self[loader.LIST_FOR_KIND[entity.kind]], entity)
     if entity.kind == "hazard" or entity.kind == "block" then
         removeFrom(self.statics, entity)
     end
     self.byId[entity.id] = nil
     entity.removed = true
     events.emit({ type = "removed", id = entity.id })
+end
+
+-- End the level with an outcome ("win", "lose" or any short word a gamemode
+-- uses) and an optional message. The simulation stops; the scene shows the
+-- result and offers a restart. Reported as a "finish" event.
+function Level:finish(outcome, message)
+    if self.finished then
+        return
+    end
+    outcome = type(outcome) == "string" and outcome:sub(1, 24) or "win"
+    message = message ~= nil and tostring(message):sub(1, 200) or nil
+    self.finished = { outcome = outcome, message = message }
+    events.emit({ type = "finish", outcome = outcome, message = message })
+end
+
+-- Send a message from the simulation to every machine's presentation: level
+-- scripts' message(name, data, level) hooks receive it after the step, here
+-- and (in network play) on every client. `data` must be plain data. Use it for
+-- one-off things clients should show (a score popup, a round starting).
+function Level:send(name, data)
+    if type(name) ~= "string" or not name:match("^[%w_%.%-]+$") or #name > 64 then
+        error("message name must be a short plain word", 2)
+    end
+    netstate.checkPlain(data, "message " .. name)
+    events.emit({ type = "message", name = name, data = data })
+end
+
+-- Hand a message to level scripts (event presentation calls this).
+function Level:deliver(name, data)
+    callHooks(self, "message", name, data, self)
 end
 
 -- The events reported since the last call, in order; the list is then empty.
@@ -106,54 +186,6 @@ function Level:takeEvents()
     return list
 end
 
--- Live players first (in join order), then props: pair resolution order is
--- part of the simulation, so it must not depend on anything else.
-local function dynamicBodies(self)
-    local bodies = {}
-    for _, player in ipairs(self.players) do
-        if not player.dead then
-            bodies[#bodies + 1] = player
-        end
-    end
-    for _, prop in ipairs(self.props) do
-        bodies[#bodies + 1] = prop
-    end
-    return bodies
-end
-
-local function step(self, delta)
-    local players = self.players
-    for _, player in ipairs(players) do
-        player:update(delta, self)
-    end
-
-    enemies.resolvePropHits(self)
-    enemies.pushOutProps(self)
-    enemies.update(self, delta, players)
-    for _, prop in ipairs(self.props) do
-        prop:update(delta, self)
-    end
-    blocks.animate(self, delta)
-
-    physics.resolveBodyCollisions(dynamicBodies(self), self.statics)
-
-    triggers.touch(self, players)
-    blocks.touchHazards(self, players)
-    blocks.breakTouched(self, players)
-    enemies.touchPlayers(self, players)
-    props.removeDetonated(self, players)
-    enemies.removeDead(self, players)
-    bounds.removeFallen(self, players)
-    for _, player in ipairs(players) do
-        player:refreshAnimationState()
-    end
-
-    for _, hooks in ipairs(self.scripts) do
-        if hooks.update then
-            hooks.update(delta)
-        end
-    end
-end
 
 -- Stop the level for good: a script (or the engine) failed in a way that
 -- cannot be pinned on one script, so the level state can no longer be
@@ -179,42 +211,60 @@ function Level:protect(fn, ...)
 end
 
 -- One simulation step. Each player reads its own `input` frame, set by the
--- scene before the step. Returns false (and does nothing) once faulted.
+-- scene before the step. Returns false (and does nothing) once faulted or
+-- finished.
 function Level:update(delta)
-    if self.faulted then
+    if self.faulted or self.finished then
         return false
     end
     events.begin(self.events)
-    local ok = self:protect(step, self, delta)
+    local ok = self:protect(stages.run, self, delta)
     events.finish()
     return ok
 end
 
--- Level scripts draw through a read-only view of the ui module.
+-- Level scripts and entities draw through a read-only view of the ui module.
 local uiView = script.readonly(ui)
-
--- Level scripts' screen-space overlays, drawn over the world.
-function Level:drawHud()
-    for _, hooks in ipairs(self.scripts) do
-        if hooks.drawHud then
-            hooks.drawHud(uiView)
-        end
-    end
-end
 
 -- Screen space, behind the world.
 function Level:drawBackground()
     view.drawBackground(self.background)
 end
 
--- World space (inside camera.pushWorld).
+-- World space (inside camera.pushWorld): level scripts' drawBehind(ui, level),
+-- geometry, then entities (entity:draw(ui)).
 function Level:draw()
+    callHooks(self, "drawBehind", uiView, self)
     view.drawGeometry(self.geometry)
     for _, list in ipairs({ self.triggers, self.hazards, self.blocks, self.enemies, self.props }) do
         for _, entity in ipairs(list) do
-            entity:draw()
+            entity:draw(uiView)
         end
     end
+end
+
+-- World space: the players, player 1 on top. A controller with a draw
+-- function draws its players (controller.draw(player, ui, level)).
+function Level:drawPlayers()
+    for i = #self.players, 1, -1 do
+        local player = self.players[i]
+        local controller = stages.controllerOf(self, player)
+        if controller and controller.draw then
+            controller.draw(player, uiView, self)
+        else
+            player:draw()
+        end
+    end
+end
+
+-- World space, over everything else: level scripts' drawWorld(ui, level).
+function Level:drawWorld()
+    callHooks(self, "drawWorld", uiView, self)
+end
+
+-- Screen space, over the world: level scripts' drawHud(ui, level).
+function Level:drawHud()
+    callHooks(self, "drawHud", uiView, self)
 end
 
 return Level

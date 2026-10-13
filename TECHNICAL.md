@@ -27,7 +27,9 @@ Rendering · Audio/Particles · Camera · Input · Trigger/Event
 
 #### Sandbox
 
-Implemented in `core/script.lua`; every rule has a test in `tests/sandbox_test.lua` (run under LuaJIT and Lua 5.1). Still planned: process isolation.
+Implemented in `core/script.lua` and `core/watchdog.lua`; every rule has a test in `tests/sandbox_test.lua` (run under LuaJIT and Lua 5.1) or `tests/sim_test.lua`. Still planned: process isolation.
+
+Scripts get raw access to their own level (its players, entities, stages, camera, gravity): that is what lets a level become a different game (`MODDING.md`). The rules below keep that access inside the level: no engine module, class or shared data, no OS, and limits on time and memory.
 
 LÖVE's LuaJIT has no built-in sandbox, and Lua environment restrictions are a guardrail, not a security boundary.
 
@@ -42,9 +44,10 @@ LÖVE's LuaJIT has no built-in sandbox, and Lua environment restrictions are a g
 - **No engine classes or shared data reachable**: classes hand out instances through separate protected metatables (`LEVEL_META`, `RANDOM_META`, `ENTITY_META`, player methods only), so `obj.__index` or a lookup never returns a class, and per-session tuning (`CONFIG`, `KEYS`) stays out of reach. `tests/sim_test.lua` audits this: it walks everything a script can reach from what it is given and fails on engine modules, engine classes, data shared across levels, unsafe built-ins, or functions from modules scripts must not reach (it found and closed the `__index` class leak and the shared player tuning).
 - Asset paths are package-relative and resolved by the loader: no `..`, no absolute paths, images only from the package or the engine's shared `assets/graphics/`. Sound events naming anything but a plain `name.wav|ogg|mp3` are ignored.
 - **Cost:** about 0.25 ms per tick in the example level with 5 players (0.49 vs 0.23 ms), about 3% of a 60 Hz frame.
+- **Watchdog** (`core/watchdog.lua`, thread in `core/watchdog_thread.lua`): `love.update` sends a heartbeat every frame. If a level is running (`watchdog.enter(root)`, before its scripts even load) and no heartbeat arrives for 8 s, the thread writes `watchdog_report.json` (the level's root) to the save directory and ends the process (`_exit`, so nothing waits on the frozen main thread). The next launch reads the report, tells the player why the game closed, and adds a downloaded level's sha256 to `blocked_levels.json`; `levelpack.mount` and the loader refuse blocked packages. Bundled and local levels are reported but never blocked (their author is testing them). Menus call `watchdog.leave()`, so a pause there is never blamed on a level. Known false positive: anything that stops the main loop for 8 s during a level (a debugger breakpoint, dragging the window on some systems) also ends the game.
 
 Remaining risks (reasons for the watchdog and process isolation):
-- A C function that is slow without being caught by the limits above (e.g. a crafted pattern on a table's metamethod path outside a guarded call) can still freeze the game until it returns. The watchdog thread (planned) ends such sessions.
+- A C function that is slow without being caught by the limits above (e.g. a crafted pattern on a table's metamethod path outside a guarded call) can still freeze the game for up to 8 s, until the watchdog ends it. Ending is all it can do: the frozen thread cannot be resumed.
 - LÖVE objects scripts can reach (an entity's `Image`, its sprite `Quad`s) expose their methods; none read or write files, but `image:release()` can break drawing (the level then stops). The audit cannot list userdata methods headlessly; this list is checked by hand.
 - A bug in LuaJIT itself, or a reachable engine function that misbehaves with crafted arguments. The audit keeps that surface small and listed; process isolation is the real boundary.
 - Scripts may change their own level's state, by design.

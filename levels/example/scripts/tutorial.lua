@@ -2,7 +2,7 @@
 -- sandbox; drawing goes through the `ui` table passed to drawHud.
 local tutorial = {}
 
-local TEXT = "ARROWS move   Z jump   X grab   C kick   ESC menu   R restart"
+local TEXT = "ARROWS move   Z jump   X grab   C kick   ESC menu   R vote restart"
 local BAR_HEIGHT = 26
 
 function tutorial.drawHud(ui)

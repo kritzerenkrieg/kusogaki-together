@@ -9,7 +9,7 @@ local config = require("core.player.config")
 
 local hud = {}
 
-local JOIN_HINT = "JOIN: I or gamepad A"
+local JOIN_HINT = "JOIN: J or gamepad A"
 local MARKER = 6 -- px, half the edge marker's height
 
 local function setTint(player, alpha)
@@ -19,8 +19,8 @@ end
 
 -- A small arrow on the left or right screen edge, at the player's height.
 local function drawEdgeMarker(player)
-    local screenX = player.x - camera.x
-    local y = math.min(math.max(player.y, MARKER), render.height - MARKER)
+    local screenX, screenY = camera.toScreen(player.x, player.y)
+    local y = math.min(math.max(screenY, MARKER), render.height - MARKER)
     setTint(player, 0.9)
     if screenX < 0 then
         love.graphics.polygon("fill", 2, y, 10, y - MARKER, 10, y + MARKER)
@@ -33,7 +33,8 @@ end
 -- players: the level's players in join order; canJoin: show the join hint.
 function hud.draw(players, canJoin)
     for i, player in ipairs(players) do
-        local carry = player.carrying and player.carrying.name or "-"
+        local carried = player.carrying
+        local carry = carried and (carried.isPlayer and ("P" .. carried.id) or carried.name) or "-"
         setTint(player, 0.85)
         text.print(("P%d %s  CARRY: %s"):format(player.id, player.state:upper(), carry), 8, 8 + (i - 1) * 12, 10)
         if not player.dead then
@@ -43,6 +44,34 @@ function hud.draw(players, canJoin)
     if canJoin then
         love.graphics.setColor(1, 1, 1, 0.6)
         text.print(JOIN_HINT, render.width - text.getWidth(JOIN_HINT, 10) - 8, 8, 10)
+    end
+end
+
+-- The restart vote: each player's tag, lit when they voted, and the countdown
+-- once the vote passes. Nothing while nobody votes.
+function hud.drawVote(players, votes, countdown)
+    local count = 0
+    for _, player in ipairs(players) do
+        count = count + (votes[player.id] and 1 or 0)
+    end
+    if count == 0 then
+        return
+    end
+    local y = render.height - 48
+    local label = ("RESTART %d/%d"):format(count, #players)
+    local tagWidth = text.getWidth("P0", 10) + 8
+    local x = render.width / 2 - (text.getWidth(label, 10) + 8 + tagWidth * #players) / 2
+    love.graphics.setColor(1, 1, 1, 0.9)
+    text.print(label, x, y, 10)
+    x = x + text.getWidth(label, 10) + 8
+    for _, player in ipairs(players) do
+        setTint(player, votes[player.id] and 1 or 0.25)
+        text.print("P" .. player.id, x, y, 10)
+        x = x + tagWidth
+    end
+    if countdown then
+        love.graphics.setColor(1, 0.9, 0.4, 1)
+        text.printf(("RESTARTING IN %d"):format(math.ceil(countdown)), 0, y - 24, render.width, "center", 16)
     end
 end
 

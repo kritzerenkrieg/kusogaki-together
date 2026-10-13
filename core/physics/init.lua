@@ -39,4 +39,13 @@ physics.resolveBodyCollision = collision.resolveBodyCollision
 physics.resolveBodyCollisions = collision.resolveBodyCollisions
 physics.pushOut = collision.pushOut
 
+-- Apply gravity to body.vy for `delta` seconds: the level's gravity
+-- (level.gravity, default physics.gravity) times the body's own gravityScale
+-- (default 1), capped at level.maxFall. A level with gravity 0 has none (space,
+-- underwater); a body with gravityScale -1 falls upward (balloons).
+function physics.fall(body, level, delta)
+    local gravity = (level and level.gravity or config.gravity) * (body.gravityScale or 1)
+    body.vy = math.min(body.vy + gravity * delta, level and level.maxFall or config.maxFall)
+end
+
 return physics

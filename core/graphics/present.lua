@@ -55,8 +55,15 @@ local HANDLERS = {
     player = function(event)
         feedback.onEvent(event.name)
     end,
-    -- Bookkeeping for network play; nothing to show.
+    -- A level script's message (Level:send): its message hooks show it.
+    message = function(event, level)
+        level:deliver(event.name, event.data)
+    end,
+    -- Bookkeeping for network play; nothing to show here (the scene draws a
+    -- finished level's result itself).
     removed = function() end,
+    spawned = function() end,
+    finish = function() end,
 }
 
 function present.event(event, level)

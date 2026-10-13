@@ -75,11 +75,13 @@ local function wakeUp(enemy, players)
     return enemy.awake
 end
 
--- Each awake enemy sees its own solids and every player (for triggers and targeting).
+-- Each awake enemy gets the level with its own `statics` (statics, loose props
+-- and other live enemies); every other field reads through to the level.
 function enemies.update(level, delta, players)
+    local view = { __index = level }
     for _, enemy in ipairs(level.enemies) do
         if not enemy.killedBy and not enemy.detonated and (enemy.held or wakeUp(enemy, players)) then
-            enemy:update(delta, { statics = solidsFor(level, enemy), players = players })
+            enemy:update(delta, setmetatable({ statics = solidsFor(level, enemy) }, view))
         end
     end
 end

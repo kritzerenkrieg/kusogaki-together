@@ -34,8 +34,10 @@ end
 -- Horizontal movement from left/right, with acceleration and friction.
 function controller.horizontal(self, delta)
     local move = 0
-    if isDown(self, "left") then move = move - 1 end
-    if isDown(self, "right") then move = move + 1 end
+    if self.knockback <= 0 then -- kicked or thrown: no steering, only friction
+        if isDown(self, "left") then move = move - 1 end
+        if isDown(self, "right") then move = move + 1 end
+    end
 
     if move ~= 0 then
         self.facing = move
@@ -105,8 +107,16 @@ function controller.kickBox(self)
     }
 end
 
--- Push props that the active kick hitbox overlaps, and break blocks it hits,
--- once per kick.
+-- Knock another player back (never lethal).
+local function knockBack(self, other)
+    other.vx = self.facing * CONFIG.playerKickPush
+    other.vy = CONFIG.playerKickLift
+    other.onGround = false
+    other.knockback = CONFIG.knockbackTime
+end
+
+-- Push props and players that the active kick hitbox overlaps, break blocks
+-- and kill enemies it hits, once per kick.
 function controller.kickHits(self, level)
     if self.kickTime <= 0 then
         return
@@ -127,6 +137,14 @@ function controller.kickHits(self, level)
             if block:onKick(self) then
                 block.brokenBy = self
             end
+        end
+    end
+    for _, other in ipairs(level.players) do
+        if other ~= self and not other.dead and not other.held and not self.kickHits[other]
+            and physics.overlaps(box, other) then
+            self.kickHits[other] = true
+            knockBack(self, other)
+            state.emit(self, "kickHit")
         end
     end
     for _, enemy in ipairs(level.enemies) do

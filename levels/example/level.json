@@ -2,7 +2,7 @@
   "format": 1,
   "name": "example",
   "size": {"w": 3392, "h": 360},
-  "scripts": ["tutorial"],
+  "scripts": ["tutorial", "goal"],
   "spawn": {"x": 40, "y": 236},
   "background": {"sky": [0.44, 0.62, 0.83]},
   "static": [

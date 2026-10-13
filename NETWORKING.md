@@ -62,12 +62,13 @@ These must land before any networking code. Each is useful on its own, and toget
 - **Checkpoints** are per player (`player:setSpawn`). The flag and sound stay shared (first touch).
 
 ### Input frames (done)
-- Frames are `{ left, right, jump, kick, hold }`, held state only; `core/player/controller.lua` reads `player.input` and nothing else.
-- `core/input.lua` makes frames from keyboard layouts and gamepads. On the wire a frame is a tick number plus a 5-bit mask.
-- Edge detection (`prevKeys`) stays inside the player, so a frame never carries "pressed" events.
+- Frames are `{ left, right, jump, kick, hold }` plus the level's custom actions (`level.json` `"actions"`, at most 16), held state only. Controllers read `player.input` and nothing else.
+- `core/input.lua` makes frames from keyboard layouts and gamepads. On the wire a frame is a tick number plus a bit mask in `level.actionNames` order (`input.pack` / `input.unpack`); both sides know the names from the package.
+- Edges (`player.pressed`, `player.released`, and the platformer's `prevKeys`) are computed by the simulation from consecutive frames, so a frame never carries "pressed" events.
 
 ### Stable IDs (done)
-- **Entities:** `id` = the placement's index in `level.json` `entities`, set by the loader, so it is the same on every load and every machine. `id` and `kind` are reserved for the engine.
+- **Entities:** `id` = the placement's index in `level.json` `entities`, set by the loader, so it is the same on every load and every machine. `id`, `kind` and `typeName` are reserved for the engine.
+- **Spawned entities** (`level:spawnEntity`) get ids after the placements, in spawn order (`level.nextId`). Only the host spawns; clients learn of a spawn from the `spawned` event (id, type, position, placement) and from snapshots, which name a spawned entity's type (`spawnedType`).
 - **Players:** ids 1–5 in join order. Player ids and entity ids are separate namespaces; a message always says which one it means.
 - **Static geometry** never changes, so it has no ids.
 - `level.byId` holds every entity still in the level; `level:get(id)` looks one up.
@@ -80,12 +81,14 @@ These must land before any networking code. Each is useful on its own, and toget
 
 | Kind | Net fields |
 |---|---|
-| player | `id, x, y, vx, vy, facing, onGround, jumping, dead`, `carrying` (entity id), and for the sprite: `state, animationTime, idleTime, kickAnimationTime, kickTime` |
-| entity (base) | `id, x, y, vx, vy, facing, frameIndex, rotation, flash, held` |
+| player | `id, x, y, vx, vy, facing, onGround, jumping, dead, held`, `carrying` (entity id) or `carryingPlayer` (player id), for the sprite `state, animationTime, idleTime, kickAnimationTime, kickTime`, and `net` (script state) |
+| entity (base) | `id, spawnedType, x, y, vx, vy, facing, frameIndex, rotation, flash, held` |
 | entity type extras | declared by the type script: `Type.netFields = { "lit" }` (plain values only); none needed in the example level yet |
+| level | `net` (level script state), `finished`, `gravity`, `camera` (`follow` as `"players"`, `"screens"`, `{ player = id }`, `{ entity = id }` or false; `x, y, zoom`) |
 
-- `netstate.snapshot(level, tick)` builds a full snapshot: players in join order, entities sorted by id.
-- **Entity drawing is state-driven:** no type script overrides `draw`, so clients draw bodies with the base `Entity:draw` from net fields.
+- `netstate.snapshot(level, tick)` builds a full snapshot: players in join order, entities sorted by id, then the level state. Script state must be plain data (`netstate.isPlain`: no functions, metatables or cycles); otherwise `snapshot` raises, and the host takes snapshots under `level:protect`, so that stops the level instead of sending garbage.
+- **Script messages:** `level:send(name, data)` reports a `message` event (data must be plain). Every machine's level scripts get it in their `message` hook during presentation: the way a script tells clients about one-off things (a score popup).
+- **Entity drawing is state-driven:** clients draw bodies from net fields. A type may override `draw(ui)` (`levels/topdown`'s coin does), as long as it draws only from net fields.
 - `tests/sim_test.lua` checks that snapshots and events are plain data, and includes both in the determinism comparison. A full snapshot of the example level is ~5.6 KB as debug text; the binary form will be much smaller.
 - **Host migration** would also need the host-only fields; that is a later phase.
 
@@ -267,7 +270,7 @@ Uploads may use common media types. The server normalizes them so every client g
 - **Join:** full snapshot on channel 2, then deltas.
 - **Late join:** allowed. The new player spawns at the level spawn.
 - **Leave:** that player is removed for everyone. Anything it carried is dropped.
-- **Restart:** the host only. It broadcasts `restart{seed}`; everyone rebuilds the level from the package and the host resends a full snapshot.
+- **Restart:** decided by a vote (more than half the players, then a 5 s countdown; `scenes/gameplay.lua`). Votes are toggled by clients over the reliable channel; the host counts them, runs the countdown and broadcasts `restart{seed}`; everyone rebuilds the level from the package and the host resends a full snapshot.
 - **Host leaves:** in v1 the session ends with a message. Host migration comes later. It needs every simulation field in the net schema so a client can resume from the last full snapshot.
 
 ### Who runs what
@@ -275,7 +278,8 @@ Uploads may use common media types. The server normalizes them so every client g
 |---|---|---|
 | physics, rules, enemies | yes | own player only (prediction) |
 | entity type scripts | full | view mode: `load()` for images, base `draw` |
-| level scripts | full | `drawHud` only, from net state the script declares |
+| level scripts | full | draw hooks (`drawBehind`, `drawWorld`, `drawHud`) and `message`, from synced state only |
+| player controllers (custom) | full | its `draw`; prediction of a custom controller is a Phase 2 question (it is script code, so the client would have to run it on its own player) |
 | fx (debris, particles, shake, sounds) | from events | from events |
 
 ---
