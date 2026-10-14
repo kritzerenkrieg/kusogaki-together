@@ -29,8 +29,12 @@ local function grabbable(self, body)
     return not body.held and not body.killedBy
 end
 
--- Nearest loose prop, live enemy or free player overlapping the grab box, or nil.
+-- Nearest loose prop, live enemy or free player overlapping the grab box, or
+-- nil. Nothing on a network client yet (grabs become claims in step 4).
 local function findGrabbable(self, level)
+    if level.remoteWorld then
+        return nil
+    end
     local box = carry.grabBox(self)
     local best, bestDist = nil, math.huge
     for _, list in ipairs({ level.props, level.enemies, level.players }) do

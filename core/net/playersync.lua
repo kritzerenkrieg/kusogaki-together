@@ -185,16 +185,18 @@ function playersync.nextState(owner, player)
     return entry
 end
 
--- The host overrides this machine's player: a setPlayer message. Obeyed at
--- once; later states carry its authority number.
+-- The host overrides this machine's player: a setPlayer message with the
+-- fields it changes (position, velocity, respawn point). Obeyed at once;
+-- later states carry its authority number.
 function playersync.override(owner, player, message)
     if message.a <= owner.authority then
         return false -- an older override
     end
     owner.authority = message.a
-    player.x, player.y, player.vx, player.vy = message.x, message.y, message.vx, message.vy
+    player.x, player.y = message.x or player.x, message.y or player.y
+    player.vx, player.vy = message.vx or player.vx, message.vy or player.vy
     player.prevY = player.y
-    if message.sx then
+    if message.sx and message.sy then
         player:setSpawn(message.sx, message.sy)
     end
     return true
@@ -260,6 +262,44 @@ function playersync.correction(record, puppet)
     record.authority = record.authority + 1
     local at = record.last or puppet
     return { t = "setPlayer", a = record.authority, x = at.x, y = at.y, vx = 0, vy = 0 }
+end
+
+-- What a host script may change on a remote player; the host sends any
+-- change to its owner (OPEN_DECISION A4).
+local WATCHED = { "x", "y", "vx", "vy", "spawnX", "spawnY" }
+
+-- The watched fields of a puppet, before the host's step.
+function playersync.watch(puppet)
+    local seen = {}
+    for _, field in ipairs(WATCHED) do
+        seen[field] = puppet[field]
+    end
+    return seen
+end
+
+-- After the host's step: merge what changed since `seen` into `pending` (a
+-- setPlayer being built for the next send; nil when nothing changed yet).
+-- Returns the updated pending table.
+function playersync.changes(pending, seen, puppet)
+    local SHORT = { x = "x", y = "y", vx = "vx", vy = "vy", spawnX = "sx", spawnY = "sy" }
+    for _, field in ipairs(WATCHED) do
+        if puppet[field] ~= seen[field] then
+            pending = pending or {}
+            if field == "spawnX" or field == "spawnY" then
+                pending.sx, pending.sy = puppet.spawnX, puppet.spawnY
+            else
+                pending[SHORT[field]] = puppet[field]
+            end
+        end
+    end
+    return pending
+end
+
+-- Turn pending changes into a setPlayer with the next authority.
+function playersync.overrideMessage(record, pending)
+    record.authority = record.authority + 1
+    pending.t, pending.a = "setPlayer", record.authority
+    return pending
 end
 
 -- A setPlayer the host sends on its own (late join at a checkpoint):

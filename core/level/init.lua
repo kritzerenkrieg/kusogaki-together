@@ -131,6 +131,7 @@ function Level:spawnEntity(typeName, x, y, def)
     local entity, listName = loader.newEntity(Type, typeName, x, y, def, "spawn")
     entity.id = self.nextId
     entity.spawned = true
+    entity.spawnDef = def
     self.nextId = self.nextId + 1
     local list = self[listName]
     list[#list + 1] = entity
@@ -226,14 +227,15 @@ function Level:protect(fn, ...)
 end
 
 -- One simulation step. Each player reads its own `input` frame, set by the
--- scene before the step. Returns false (and does nothing) once faulted or
--- finished.
-function Level:update(delta)
+-- scene before the step. `only` (a set of stage names) runs just those
+-- stages: a network client runs its own player's (core/net/worldsync.lua).
+-- Returns false (and does nothing) once faulted or finished.
+function Level:update(delta, only)
     if self.faulted or self.finished then
         return false
     end
     events.begin(self.events)
-    local ok = self:protect(stages.run, self, delta)
+    local ok = self:protect(stages.run, self, delta, only)
     events.finish()
     return ok
 end

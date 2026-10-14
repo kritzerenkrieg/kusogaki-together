@@ -78,9 +78,6 @@ do
                 for _, player in ipairs(level.players) do ids[#ids + 1] = player.id end
                 return { seed = level.seed, generation = generation, players = ids }
             end,
-            snapshot = function()
-                return { generation = generation, data = netstate.pack(netstate.snapshot(level, 7)) }
-            end,
             left = function(id) left[#left + 1] = id end,
         },
     }))
@@ -98,7 +95,6 @@ do
                 return true
             end,
             welcome = function(message) got.welcome = message end,
-            snapshot = function(message) got.snapshot = message end,
             restart = function(message) got.restart = message end,
             joined = function(id) got.joined[#got.joined + 1] = id end,
             left = function(id) got.left[#got.left + 1] = id end,
@@ -108,15 +104,10 @@ do
     end
 
     local first = newClient()
-    pump({ host, first.client }, function() return first.snapshot ~= nil end)
+    pump({ host, first.client }, function() return first.welcome ~= nil end)
     check("a client joins: level, welcome with the seed, generation and players",
         first.level == "example" and first.welcome and first.welcome.you == 2 and first.welcome.seed == 4242
         and first.welcome.generation == 3 and #first.welcome.players == 2, tostring(first.closed))
-    local expected = netstate.snapshot(level, 7)
-    local received = first.snapshot and netstate.unpack(first.snapshot.data)
-    check("the join's full snapshot arrives intact", received and received.tick == 7
-        and #received.players == #expected.players and #received.entities == #expected.entities
-        and received.entities[5].x == expected.entities[5].x and received.players[2].id == 2)
 
     local second = newClient()
     pump({ host, first.client, second.client }, function() return second.welcome ~= nil and #first.joined == 1 end)
@@ -189,14 +180,15 @@ do
     local function decodes(message)
         return protocol.decode(wire.encode(message), 1024) ~= nil
     end
-    check("state messages are checked", decodes({ t = "state", g = 1, s = 5, a = 0, p = p, e = { "jump" } })
-        and not decodes({ t = "state", g = 1, s = 5, a = 0, p = p, e = { "no spaces" } })
-        and not decodes({ t = "state", g = 1, s = -1, a = 0, p = p, e = {} }))
+    check("state messages are checked", decodes({ t = "state", g = 1, s = 5, a = 0, p = p, e = { "jump" }, k = 0 })
+        and not decodes({ t = "state", g = 1, s = 5, a = 0, p = p, e = { "no spaces" }, k = 0 })
+        and not decodes({ t = "state", g = 1, s = -1, a = 0, p = p, e = {}, k = 0 }))
     check("players messages are checked", decodes({ t = "players", g = 1, list = { { 1, 3, p, {} }, { 2, 9, p, {} } } })
         and not decodes({ t = "players", g = 1, list = { { 1, 3, p, {} }, { 1, 4, p, {} } } })
         and not decodes({ t = "players", g = 1, list = { { 7, 3, p, {} } } }))
     check("setPlayer messages are checked", decodes({ t = "setPlayer", g = 1, a = 1, x = 1, y = 2, vx = 0, vy = 0 })
         and decodes({ t = "setPlayer", g = 1, a = 1, x = 1, y = 2, vx = 0, vy = 0, sx = 1, sy = 2 })
+        and decodes({ t = "setPlayer", g = 1, a = 1, sx = 1, sy = 2 })
         and not decodes({ t = "setPlayer", g = 1, a = 1, x = 0 / 0, y = 2, vx = 0, vy = 0 }))
 
     -- The referee refuses only the clearly impossible.
@@ -253,6 +245,110 @@ do
     check("states carry the authority they obey", playersync.nextState(own, owned).a == 2)
 end
 
+-- ── World sync (core/net/worldsync.lua) ──────────────────────────────────
+local worldsync = require("core.net.worldsync")
+do
+    -- The host runs the example level with a player walking and jumping
+    -- right; a client level (same seed) only applies what it is sent.
+    local hostLevel = Level.load("example", { seed = 9 })
+    local runner = hostLevel:addPlayer(playerModule.new(hostLevel.spawn.x, hostLevel.spawn.y))
+    local clientLevel = Level.load("example", { seed = 9 })
+    clientLevel.remoteWorld = true
+    local hostSide, clientSide = worldsync.host(), worldsync.client()
+    worldsync.addClient(hostSide, 2)
+    local function through(message)
+        message.g, message.vt, message.cd = 1, {}, false
+        return protocol.decode(protocol.encode(message), protocol.MAX_HOST_MESSAGE)
+    end
+    local function step(ticks)
+        for i = 1, ticks do
+            runner.input = { right = true, jump = (i % 40) < 20 }
+            hostLevel:update(1 / 60)
+            hostLevel:takeEvents()
+        end
+    end
+    local function sameWorld()
+        for id, entity in pairs(hostLevel.byId) do
+            local other = clientLevel:get(id)
+            if not other or math.abs(other.x - entity.x) > 1 / 16 or math.abs(other.y - entity.y) > 1 / 16 then
+                return false, "entity " .. id
+            end
+        end
+        for id in pairs(clientLevel.byId) do
+            if not hostLevel:get(id) then
+                return false, "extra entity " .. id
+            end
+        end
+        return true
+    end
+
+    local state = worldsync.capture(hostSide, hostLevel)
+    local message, full = worldsync.messageFor(hostSide, 2, state, 0)
+    check("a client without a base gets a full snapshot", full and message.base == 0)
+    check("no second full snapshot before FULL_EVERY", worldsync.messageFor(hostSide, 2,
+        worldsync.capture(hostSide, hostLevel), 0.5) == nil)
+    local rebuilt = worldsync.receive(clientSide, through(message))
+    check("the client rebuilds the full snapshot (hash matches)", rebuilt ~= nil)
+    clientLevel:protect(worldsync.apply, clientLevel, rebuilt)
+    check("the client's world matches the host's", sameWorld())
+    worldsync.acknowledge(hostSide, 2, worldsync.ack(clientSide))
+
+    local enemiesBefore, removedBefore = #hostLevel.enemies, 0
+    for _, _ in pairs(hostLevel.byId) do removedBefore = removedBefore + 1 end
+    hostLevel.enemies[1].killedBy = "stomp" -- removed by the host's next step
+    step(600)
+    hostLevel:spawnEntity("brick", 300, 100)
+    local entityCount = 0
+    for _ in pairs(hostLevel.byId) do entityCount = entityCount + 1 end
+    state = worldsync.capture(hostSide, hostLevel)
+    message, full = worldsync.messageFor(hostSide, 2, state, 2)
+    local fresh = worldsync.host()
+    worldsync.addClient(fresh, 1)
+    local fullMessage = worldsync.messageFor(fresh, 1, state, 0)
+    fullMessage.g, fullMessage.vt, fullMessage.cd = 1, {}, false
+    local fullBytes = #protocol.encode(fullMessage)
+    check("after its ack the client gets a delta", not full and message.base == rebuilt.n
+        and #message.gone > 0, string.format("gone %d, entities %d -> %d", #message.gone, removedBefore, entityCount))
+    rebuilt = worldsync.receive(clientSide, through(message))
+    clientLevel:protect(worldsync.apply, clientLevel, rebuilt)
+    local ok, why = sameWorld()
+    check("deltas keep the client's world equal: moves, removals, a spawn", rebuilt and ok, why)
+    check("enemies the host killed are gone on the client", #clientLevel.enemies == #hostLevel.enemies
+        and #hostLevel.enemies < enemiesBefore, ("%d -> %d, client %d"):format(enemiesBefore,
+        #hostLevel.enemies, #clientLevel.enemies))
+    worldsync.acknowledge(hostSide, 2, worldsync.ack(clientSide))
+
+    -- A quiet delta is small.
+    state = worldsync.capture(hostSide, hostLevel)
+    message = worldsync.messageFor(hostSide, 2, state, 3)
+    message.g, message.vt, message.cd = 1, {}, false
+    check("a delta with little change is small", #protocol.encode(message) < 400,
+        #protocol.encode(message) .. " bytes")
+    print(string.format("      world: delta %d bytes", #protocol.encode(message)))
+
+    check("an old snapshot is ignored", worldsync.receive(clientSide, through(message)) ~= nil
+        and select(2, worldsync.receive(clientSide, through(message))) == "old")
+    local orphan = through(message)
+    orphan.n, orphan.base = orphan.n + 5, 999
+    check("a delta to a base the client lacks is dropped", select(2, worldsync.receive(clientSide, orphan)) == "no base")
+    local tampered = through(message)
+    tampered.n, tampered.hash = tampered.n + 1, ("0"):rep(16)
+    check("a hash mismatch asks for a full snapshot", select(2, worldsync.receive(clientSide, tampered)) == "hash"
+        and worldsync.ack(clientSide) == 0)
+    worldsync.acknowledge(hostSide, 2, 0)
+    local _, again = worldsync.messageFor(hostSide, 2, worldsync.capture(hostSide, hostLevel), 10)
+    check("then the host sends a full one", again == true)
+
+    -- Level state: script state and the outcome.
+    hostLevel.net.score = 7
+    hostLevel:finish("win", "done")
+    local full = worldsync.messageFor(hostSide, 2, worldsync.capture(hostSide, hostLevel), 20)
+    clientLevel:protect(worldsync.apply, clientLevel, worldsync.receive(clientSide, through(full)))
+    check("level state reaches the client", clientLevel.net.score == 7 and clientLevel.finished
+        and clientLevel.finished.outcome == "win")
+    print(string.format("      world: full snapshot %d bytes", fullBytes))
+end
+
 -- ── The gameplay scene as host, with a client over localhost ─────────────
 do
     local gameplay = require("scenes.gameplay")
@@ -264,12 +360,13 @@ do
     local client = assert(session.join("127.0.0.1:" .. (PORT + 1), {
         level = function() return true end,
         welcome = function(message) got.welcome = message end,
-        snapshot = function() end,
         restart = function() end,
         joined = function() end,
         left = function() end,
         players = function(message) got.players[#got.players + 1] = message end,
         setPlayer = function(message) got.setPlayer[#got.setPlayer + 1] = message end,
+        world = function(message) got.world = message end,
+        events = function() end,
         closed = function(reason) got.closed = reason end,
     }))
     local function run(frames, done)
@@ -281,11 +378,13 @@ do
         end
         return false
     end
-    run(400, function() return got.welcome ~= nil and #got.setPlayer > 0 end)
+    run(400, function() return got.welcome ~= nil and #got.setPlayer > 0 and got.world ~= nil end)
     local place = got.setPlayer[1]
     check("a late joiner is placed at the host's checkpoint", got.welcome and place and place.a == 1
         and place.sx == gameplay.getPlayer(1).spawnX, tostring(got.closed))
 
+    check("a joined client gets the host's full world", got.world and got.world.base == 0
+        and #got.world.ents > 0 and got.world.lvl ~= false)
     local level = gameplay.getLevel()
     local puppet
     for _, player in ipairs(level.players) do
@@ -300,7 +399,7 @@ do
         seq = seq + 1
         mine.x = x
         client:sendState({ t = "state", g = got.welcome.generation, s = seq, a = authority,
-            p = playersync.pack(mine), e = { "jump" } })
+            p = playersync.pack(mine), e = { "jump" }, k = 0 })
     end
     for i = 1, 10 do
         sendAt(place.x + i * 6, 1)
@@ -336,11 +435,25 @@ do
     -- A state from another level generation is dropped.
     mine.x = before + 40
     local wrongGeneration = { t = "state", g = got.welcome.generation + 1, s = seq + 1, a = 2,
-        p = playersync.pack(mine), e = {} }
+        p = playersync.pack(mine), e = {}, k = 0 }
     seq = seq + 1
     client:sendState(wrongGeneration)
     run(10)
     check("states from another level generation are dropped", math.abs(puppet.x - (before + 4)) < 4)
+
+    -- A host script moves the remote player once: its machine is told.
+    local moved = false
+    gameplay.getLevel():addStage("teleporter", function()
+        if not moved then
+            moved = true
+            puppet.x, puppet.spawnX, puppet.spawnY = 500, 500, 100
+        end
+    end)
+    local count = #got.setPlayer
+    run(200, function() return #got.setPlayer > count end)
+    local sent = got.setPlayer[count + 1]
+    check("a host script moving a remote player sends a setPlayer", sent and sent.x == 500 and sent.sx == 500
+        and sent.y == nil and sent.a == 3, sent and ("x %s y %s a %s"):format(sent.x, sent.y, sent.a))
 
     client:close()
     run(60)

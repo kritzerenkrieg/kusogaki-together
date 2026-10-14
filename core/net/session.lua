@@ -43,7 +43,6 @@ Host.__index = Host
 --   handler   the game's side:
 --     accept()            -> a free player id, or nil and a reason (session full)
 --     welcome(id)         -> { seed, generation, players } once that client is in
---     snapshot()          -> { generation, data } full snapshot, or nil
 --     left(id)            a joined client left or timed out
 --     vote(id, on)        a joined client's player toggled its restart vote
 --     state(id, message)  a joined client's player state (core/net/playersync.lua)
@@ -101,10 +100,6 @@ local function hostReceive(self, entry, data)
         local info = self.handler.welcome(id)
         send(entry.peer, { t = "welcome", you = id, seed = info.seed, generation = info.generation,
             players = info.players }, protocol.RELIABLE)
-        local full = self.handler.snapshot()
-        if full then
-            send(entry.peer, { t = "snapshot", generation = full.generation, data = full.data }, protocol.BULK)
-        end
         self:broadcast({ t = "joined", id = id }, id)
     elseif entry.stage == "joined" and message.t == "vote" then
         self.handler.vote(entry.id, message.on)
@@ -180,11 +175,12 @@ function Host:broadcastState(message)
     end
 end
 
--- Send a session message to the client playing player `id` (reliable).
-function Host:sendTo(id, message)
+-- Send a message to the client playing player `id`: reliable, or unreliable
+-- state when `unreliable` is true.
+function Host:sendTo(id, message, unreliable)
     for _, entry in pairs(self.peers) do
         if entry.stage == "joined" and entry.id == id then
-            send(entry.peer, message, protocol.RELIABLE)
+            send(entry.peer, message, unreliable and protocol.STATE or protocol.RELIABLE)
             return true
         end
     end
@@ -229,7 +225,7 @@ Client.__index = Client
 --   level(name, fingerprint) -> true when this machine has that level (else
 --                               false and a reason)
 --   welcome(message)           joined: { you, seed, generation, players }
---   snapshot(message)          { generation, data }
+--   world(message), events(message)  the host's world (core/net/worldsync.lua)
 --   restart(message)           { seed, generation, players }
 --   joined(id), left(id)       another player came or went
 --   players(message)           the other players' states { g, list }
@@ -276,7 +272,9 @@ end
 local CLIENT_EXPECTS = {
     hello = { level = true },
     ready = { welcome = true },
-    joined = { snapshot = true, restart = true, joined = true, left = true, players = true, setPlayer = true },
+    joined = {
+        restart = true, joined = true, left = true, players = true, setPlayer = true, world = true, events = true,
+    },
 }
 
 local function clientReceive(self, data)
@@ -309,7 +307,7 @@ local function clientReceive(self, data)
     elseif message.t == "joined" or message.t == "left" then
         self.handler[message.t](message.id)
     else
-        self.handler[message.t](message) -- snapshot, restart, players, setPlayer
+        self.handler[message.t](message) -- restart, players, setPlayer, world, events
     end
 end
 

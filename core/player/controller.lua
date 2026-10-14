@@ -116,9 +116,11 @@ local function knockBack(self, other)
 end
 
 -- Push props and players that the active kick hitbox overlaps, break blocks
--- and kill enemies it hits, once per kick.
+-- and kill enemies it hits, once per kick. On a network client
+-- (`level.remoteWorld`: the host owns the world) kicks hit nothing yet; they
+-- become claims in Phase 2 step 4.
 function controller.kickHits(self, level)
-    if self.kickTime <= 0 then
+    if self.kickTime <= 0 or level.remoteWorld then
         return
     end
     local box = controller.kickBox(self)

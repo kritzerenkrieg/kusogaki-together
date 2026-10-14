@@ -25,10 +25,11 @@
 -- player and sends its state 20 times a second; the host checks it and
 -- forwards everyone's to everyone. Other machines' players are puppets here.
 --
--- Phase 2 status: sessions, restarts, votes and player movement are
--- networked. Every machine still simulates the world itself (the join
--- snapshot is kept in gameplay.lastSnapshot but not applied), so enemies,
--- blocks and props can differ between machines until world sync (step 3).
+-- World (step 3, core/net/worldsync.lua): the host runs the world (every
+-- rule, entity and level script) and sends each client snapshot deltas and
+-- one-off events; a client runs only its own player's stages against that
+-- world (level.remoteWorld) and draws. A host script that changes a remote
+-- player sends that player's machine a setPlayer by itself.
 local sceneEngine = require("core.scenes")
 local fx = require("core.graphics.fx")
 local camera = require("core.graphics.camera")
@@ -47,6 +48,8 @@ local netstate = require("core.level.netstate")
 local levelpack = require("core.levelpack")
 local session = require("core.net.session")
 local playersync = require("core.net.playersync")
+local worldsync = require("core.net.worldsync")
+local script = require("core.script")
 local watchdog = require("core.watchdog")
 
 local gameplay = {}
@@ -87,6 +90,10 @@ local netStatus = nil       -- what to tell the player about the session ("conne
 local owner = playersync.owner() -- this machine's player: send sequence and authority
 local remoteSync = {}       -- host: id -> playersync.remote(); client: id -> newest sequence
 local hostSends = {}        -- host: reliable messages for one client { id, message } (setPlayer)
+local world = nil           -- host: worldsync.host(); client: worldsync.client()
+local worldEvents = {}      -- host: events for the clients since the last send
+local pendingSet = {}       -- host: id -> changes a script made to that remote player
+local removedBodies = {}    -- client: id -> entity a snapshot removed (late events still show it)
 local NET_PORT, NET_BIND = nil, nil -- tests host on another port and address
 
 local MAX_SEED = 2147483646 -- seeds are 1..MAX_SEED (the MINSTD generator's range)
@@ -187,6 +194,11 @@ local function buildLevel(seed)
         for _, record in pairs(remoteSync) do
             record.last, record.forward = nil, nil -- a new level: no previous position
         end
+        worldsync.reset(world) -- every client gets a full snapshot of the new level
+        worldEvents, pendingSet = {}, {}
+    elseif NET_MODE == "client" then
+        level.remoteWorld = true -- the host owns the world; this machine runs its player
+        world, removedBodies = worldsync.client(), {}
     end
     votes, countdown = {}, nil
     tick = 0
@@ -359,20 +371,14 @@ local hostHandler = {
         local place = playersync.place(remoteSync[id], x, y)
         place.g = generation
         hostSends[#hostSends + 1] = { id = id, message = place }
+        worldsync.addClient(world, id) -- a full snapshot at the next send
         return { seed = level.seed, generation = generation, players = sessionIds() }
-    end,
-    -- A full snapshot of the running level (taken under script limits: script
-    -- state that is not plain data stops the level instead of being sent).
-    snapshot = function()
-        local data
-        level:protect(function()
-            data = netstate.pack(netstate.snapshot(level, tick))
-        end)
-        return data and { generation = generation, data = data }
     end,
     left = function(id)
         remoteIds[id] = nil
         remoteSync[id] = nil
+        pendingSet[id] = nil
+        worldsync.removeClient(world, id)
         local player = playerWithId(id)
         if player then
             removePlayer(player)
@@ -389,6 +395,9 @@ local hostHandler = {
         local puppet, record = playerWithId(id), remoteSync[id]
         if message.g ~= generation or not puppet or not record then
             return -- from another level generation, or a player not in this level
+        end
+        if message.s > record.seq then
+            worldsync.acknowledge(world, id, message.k) -- the newest world snapshot it has
         end
         local result = playersync.receive(record, message, puppet, level, love.timer.getTime())
         if result == "refused" then
@@ -430,11 +439,35 @@ local clientHandler = {
         gameplay.restart(message.seed)
         netStatus = nil
     end,
-    -- Kept for step 3 (applying world snapshots); stale generations dropped.
-    snapshot = function(message)
-        if message.generation == generation then
-            gameplay.lastSnapshot = netstate.unpack(message.data)
+    -- The host's world: a snapshot delta (or a full one). Newer ones are
+    -- applied to the level; the restart votes come with it.
+    world = function(message)
+        if message.g ~= generation or not level then
+            return
         end
+        local state = worldsync.receive(world, message)
+        if state then
+            level:protect(worldsync.apply, level, state, removedBodies)
+            votes = {}
+            for _, id in ipairs(message.vt) do
+                votes[id] = true
+            end
+            countdown = message.cd or nil
+        end
+    end,
+    -- One-off happenings in the host's world: debris, explosions, corpses,
+    -- sounds and level scripts' messages.
+    events = function(message)
+        if message.g ~= generation or not level then
+            return
+        end
+        local list = {}
+        for _, event in ipairs(message.list) do
+            if worldsync.FORWARD_EVENTS[event.type] then
+                list[#list + 1] = worldsync.localEvent(level, event, removedBodies)
+            end
+        end
+        level:protect(present.all, list, level, localIds())
     end,
     restart = function(message)
         if message.generation <= generation then
@@ -516,15 +549,59 @@ function gameplay.closeNetwork()
     end
 end
 
--- 20 times a second: a client sends its player's state to the host; the host
--- sends every player's newest state to the clients (its own, and the clients'
--- it accepted since the last send).
-local function sendPlayerState()
-    local own = playersync.nextState(owner, slots[1].player)
-    if NET_MODE == "client" then
-        net:sendState({ t = "state", g = generation, s = own.s, a = own.a, p = own.p, e = own.e })
+local function flushOutbox()
+    for _, message in ipairs(gameplay.takeOutbox()) do
+        net:broadcast(message)
+    end
+end
+
+local function voteList()
+    local list = {}
+    for _, id in ipairs(sessionIds()) do
+        if votes[id] then
+            list[#list + 1] = id
+        end
+    end
+    return list
+end
+
+-- The host's world to every client: capture a snapshot (under script limits:
+-- script state that is not plain data stops the level), then a delta or full
+-- snapshot per client, then the events since the last send.
+local function sendWorld()
+    local state
+    local ok, err = script.protect(function()
+        state = worldsync.capture(world, level)
+    end)
+    if not ok then
+        level:fault(err)
         return
     end
+    for id in pairs(world.clients) do
+        local message, full = worldsync.messageFor(world, id, state, love.timer.getTime())
+        if message then
+            message.g, message.vt, message.cd = generation, voteList(), countdown or false
+            net:sendTo(id, message, not full)
+        end
+    end
+    if #worldEvents > 0 then
+        net:broadcast({ t = "events", g = generation, list = worldEvents })
+        worldEvents = {}
+    end
+end
+
+-- 20 times a second: a client sends its player's state (and the newest world
+-- snapshot it has) to the host; the host sends every player's newest state to
+-- the clients (its own, and the clients' it accepted since the last send),
+-- the setPlayers its scripts caused, and the world.
+local function sendNetwork()
+    local own = playersync.nextState(owner, slots[1].player)
+    if NET_MODE == "client" then
+        net:sendState({ t = "state", g = generation, s = own.s, a = own.a, p = own.p, e = own.e,
+            k = worldsync.ack(world) })
+        return
+    end
+    flushOutbox() -- a restart goes out before the new level's world
     local list = { { slots[1].id, own.s, own.p, own.e } }
     for id, record in pairs(remoteSync) do
         if record.forward then
@@ -533,6 +610,15 @@ local function sendPlayerState()
         end
     end
     net:broadcastState({ t = "players", g = generation, list = list })
+    for id, pending in pairs(pendingSet) do
+        if remoteSync[id] then
+            local message = playersync.overrideMessage(remoteSync[id], pending)
+            message.g = generation
+            hostSends[#hostSends + 1] = { id = id, message = message }
+        end
+    end
+    pendingSet = {}
+    sendWorld()
 end
 
 -- Is this machine playing a level right now (a client waits for its welcome)?
@@ -549,6 +635,7 @@ function gameplay.load()
     outbox = {}
     generation = 0
     owner, remoteSync, hostSends = playersync.owner(), {}, {}
+    world = NET_MODE == "host" and worldsync.host() or nil
     if NET_MODE == "client" then
         level = nil
     else
@@ -569,16 +656,32 @@ function gameplay.update(delta)
             slot.player.input = slot.source.read(level.actions)
         end
         interp.record(movingBodies())
+        local seen = {} -- host: remote players before the step (did a script move one?)
         for _, player in ipairs(level.players) do
             if player.remote then
                 playersync.advance(player, step)
+                seen[player] = NET_MODE == "host" and playersync.watch(player) or nil
             end
         end
+        local client = NET_MODE == "client"
+        if client then
+            worldsync.advance(level, step)
+        end
         local wasFinished = level.finished
-        level:update(step)
+        level:update(step, client and worldsync.CLIENT_STAGES or nil)
         tick = tick + 1
+        for player, before in pairs(seen) do
+            pendingSet[player.id] = playersync.changes(pendingSet[player.id], before, player)
+        end
         local events = level:takeEvents()
         playersync.noteEvents(owner, events, slots[1].id)
+        if NET_MODE == "host" and net then
+            for _, event in ipairs(events) do
+                if worldsync.FORWARD_EVENTS[event.type] and #worldEvents < 256 then
+                    worldEvents[#worldEvents + 1] = netstate.event(event)
+                end
+            end
+        end
         level:protect(present.all, events, level, localIds())
         if not wasFinished and level.finished and level.finished.outcome == "win" then
             gameplay.resetRespawns()
@@ -587,13 +690,11 @@ function gameplay.update(delta)
             updateVote(step)
         end
         if net and tick % playersync.SEND_EVERY == 0 then
-            sendPlayerState()
+            sendNetwork()
         end
     end)
     if NET_MODE == "host" and net then
-        for _, message in ipairs(gameplay.takeOutbox()) do
-            net:broadcast(message)
-        end
+        flushOutbox()
         for _, send in ipairs(hostSends) do
             net:sendTo(send.id, send.message)
         end

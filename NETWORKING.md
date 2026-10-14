@@ -283,9 +283,14 @@ Network load stays as small as possible; speed beats completeness.
 - The host keeps only the newest valid update per player, runs the referee checks, and forwards it.
 
 ### Host → clients (the world)
-- World snapshots at 20 Hz on channel 0, with the latest forwarded player states. Each snapshot is a delta against the last snapshot that client acked; a full snapshot is sent on join, restart, after a long gap and periodically.
-- Bodies are addressed by ID. `removed` comes as an event, so a missing body in a delta just means "unchanged".
-- **Rough size:**
+- **Built (`core/net/worldsync.lua`, step 3).** Modders write no netcode: the host runs every level script and the engine finds what changed by comparing snapshots.
+- World snapshots at 20 Hz: `world{g, n, base, ents, gone, lvl, pl, vt, cd, hash}`. Each is a delta against the snapshot that client acknowledged (`k` in its `state`): changed or new entity records, ids of removed ones, the level state if it changed, players' `net` that changed, plus restart votes and countdown. Deltas go on channel 0 (unreliable); a full snapshot (`base` 0) goes reliable, on join, after a restart, and when the client's base is too old (32 snapshots) or its hash did not match; at most one a second per client.
+- **Drift detection:** every world message carries a hash (md5, 16 hex digits) of the whole state; the client rebuilds the state, checks the hash, and on a mismatch acknowledges 0 to get a full snapshot. This replaces periodic full snapshots.
+- Positions and velocities of entities are snapped to 1/8 before sending, so the hash matches exactly on both sides.
+- Bodies are addressed by ID; a missing body in a delta means "unchanged", removals are listed in `gone`.
+- One-off events (`events{g, list}`: debris, explosion, corpse, sfx, message) go reliable and in order; the client looks entities up by id, also among bodies a snapshot just removed.
+- **Measured (example level):** full snapshot about 2.4 KB, a quiet delta about 150 bytes.
+- **Rough size (planned):**
   - full snapshot: 5 players + ~150 bodies × ~20 B ≈ 3 KB;
   - typical delta: a few hundred bytes;
   - host upload stays well under 100 KB/s for 4 clients.
@@ -326,7 +331,7 @@ Tracked in `OPEN_DECISION.md`.
 ### Session flow
 - **Hosting and joining (Phase 2):** `love2d . --host` opens a session; `love2d . --join <ip>` joins one. Room codes replace typing an IP in Phase 3.
 - **Levels (Phase 2):** bundled levels only. On connect the host checks the level's sha256 and the game version, and refuses a mismatch with a message.
-- **Join (built, `core/net/session.lua`):** `hello{protocol, game}` → the host answers `level{name, fingerprint}` (a refused version gets `reject{reason}`) → the client checks it has the same files and answers `ready{fingerprint}` → the host checks it again and sends `welcome{you, seed, generation, players}`, then a full snapshot on channel 2, and tells the others `joined{id}`. A client must finish within 5 s. The new player's machine becomes its owner. Deltas come in step 3.
+- **Join (built, `core/net/session.lua`):** `hello{protocol, game}` → the host answers `level{name, fingerprint}` (a refused version gets `reject{reason}`) → the client checks it has the same files and answers `ready{fingerprint}` → the host checks it again and sends `welcome{you, seed, generation, players}` and tells the others `joined{id}`; the next world message to the new client is a full snapshot (reliable, after the welcome). A client must finish within 5 s. The new player's machine becomes its owner.
 - **Fingerprint:** a bundled level's is the sha256 of its files (sorted paths, sizes, contents; `levelpack.fingerprint`), a downloaded one's is its package hash.
 - **Player ids** stay stable for the session: a remote player keeps its id across restarts; a free id is reused only after its player left.
 - **Late join:** allowed. The new player spawns at the host's latest checkpoint (the host player's current spawn point), sent as a `setPlayer` right after the welcome (built).

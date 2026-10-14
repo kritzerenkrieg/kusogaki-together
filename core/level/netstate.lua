@@ -11,12 +11,12 @@ netstate.PLAYER_FIELDS = {
     "state", "animationTime", "idleTime", "kickAnimationTime", "kickTime", "held", "respawns", "net",
 }
 
--- Entity (base): body and what Entity:draw needs, plus `spawnedType`: the type
--- name of an entity spawned at runtime (clients know placed ones from
--- level.json). A type adds its own fields with `Type.netFields = { "lit", ... }`
--- (plain data only).
+-- Entity (base): body and what Entity:draw needs, plus `spawnedType` and
+-- `spawnDef`: the type name and placement of an entity spawned at runtime
+-- (clients know placed ones from level.json). A type adds its own fields with
+-- `Type.netFields = { "lit", ... }` (plain data only).
 netstate.ENTITY_FIELDS = {
-    "spawnedType", "x", "y", "vx", "vy", "facing", "frameIndex", "rotation", "flash", "held",
+    "spawnedType", "x", "y", "vx", "vy", "facing", "frameIndex", "rotation", "flash", "held", "spawnDef",
 }
 
 -- ── Plain data ────────────────────────────────────────────────────────────
@@ -114,13 +114,15 @@ local function followRef(follow)
     return false
 end
 
--- Level-wide state: script state (level.net), the outcome once finished, the
+-- Level-wide state: script state (level.net), the outcome once finished (or
+-- the first line of why it stopped), the
 -- gravity and the camera (both may be changed by scripts while it runs).
 function netstate.level(level)
     local camera = level.camera or {}
     return {
         net = level.net,
         finished = level.finished,
+        faulted = level.faulted and level.faulted:match("^[^\n]*"):sub(1, 200) or nil,
         gravity = level.gravity,
         camera = { follow = followRef(camera.follow), x = camera.x, y = camera.y, zoom = camera.zoom },
     }
@@ -174,6 +176,15 @@ local function unpackRecord(list, fields, extras)
         if value ~= false then record[field] = value end
     end
     return record
+end
+
+-- One entity record <-> its wire list; `extras` = its type's netFields.
+function netstate.packEntity(record, extras)
+    return packRecord(record, netstate.ENTITY_FIELDS, extras)
+end
+
+function netstate.unpackEntity(list, extras)
+    return unpackRecord(list, netstate.ENTITY_FIELDS, extras)
 end
 
 local PLAYER_PACKED = {}

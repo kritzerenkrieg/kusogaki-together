@@ -196,11 +196,14 @@ function stages.replace(level, name, run)
 end
 
 -- One step: every stage in order (a copy of the list, so a stage may change
--- it safely). Finishing the level ends the step.
-function stages.run(level, delta)
+-- it safely), or only those named in the set `only`. Finishing the level ends
+-- the step.
+function stages.run(level, delta, only)
     local list = {}
-    for i, stage in ipairs(level.stages) do
-        list[i] = stage
+    for _, stage in ipairs(level.stages) do
+        if not only or only[stage.name] then
+            list[#list + 1] = stage
+        end
     end
     for _, stage in ipairs(list) do
         stage.run(level, delta)

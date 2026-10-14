@@ -58,6 +58,7 @@ core/
     protocol.lua        message types, validation of untrusted bytes, port, addresses
     session.lua         ENet host and client: join handshake, refusals, session messages
     playersync.lua      player state: wire form, puppets, owner sends, host referee, setPlayer
+    worldsync.lua       the host's world: snapshots, acked deltas, hash, client apply, events
   version.lua         game and protocol versions (must match to play together)
   fixedstep.lua       fixed-timestep clock (60 Hz ticks)
   script.lua          the script sandbox: environment, read-only engine views, limits
@@ -158,6 +159,8 @@ Entity scripts are sandboxed (no `love`, no `require`), so the base `Entity` pro
 
 The scene runs `Level:update` in fixed 1/60 s ticks through `core/fixedstep.lua`, never with the raw frame time; a frame may run zero or several ticks. Drawing blends moving bodies (players, enemies, props) between the last two ticks (`core/graphics/interp.lua`) and puts them back afterwards, so the simulation never sees a blended position. The camera follows the blended players.
 
+
+**Network clients:** a client's level has `remoteWorld` set; the scene runs `level:update(delta, worldsync.CLIENT_STAGES)`, only its own player's stages (input, players, collisions, hazards, enemyTouch, bounds, playerAnimation), and applies the host's snapshots between ticks (`core/net/worldsync.lua`). Kicks and grabs hit nothing there until claims (step 4); props are immovable.
 
 **Puppets (network play):** another machine's player is a puppet here (`player.remote`, `core/net/playersync.lua`): the `players` and `playerAnimation` stages skip it, and so do the rules that change a player (`hazards`, `breakBlocks`, `enemyTouch`, `detonations`, `enemyDeaths`, `bounds`; they get `stages.simulated(level)`), because its owner's machine runs those. Rules that only read players (`enemies` waking, `triggers`) see everyone. A puppet is solid but `immovable` (infinite mass, never settled against statics): a local player walking into it stops; one standing on a local player is ignored by that pair. Kicks and grabs skip puppets until claims (Phase 2 step 4). The scene places puppets from received states and moves them on at their last velocity for up to 0.1 s between states (`playersync.advance`).
 
