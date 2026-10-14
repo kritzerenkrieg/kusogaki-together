@@ -11,7 +11,7 @@ For engine vision, the Lua sandbox and level packages, see `TECHNICAL.md`. For o
 ```text
 main.lua              boots LÖVE, registers scenes
 scenes/
-  gameplay.lua        loads a level and its local players, wires update/draw/keys/join
+  gameplay.lua        loads a level and its local player, wires update/draw/keys; network play (--host/--join)
   title_screen.lua
 core/
   level/              a running level; require("core.level") is init.lua
@@ -54,13 +54,17 @@ core/
     hud.lua             gameplay HUD
     interp.lua          draw-time blending between fixed ticks
     present.lua         events -> effects, sound and shake
+  net/                network play (NETWORKING.md)
+    protocol.lua        message types, validation of untrusted bytes, port, addresses
+    session.lua         ENet host and client: join handshake, refusals, session messages
+  version.lua         game and protocol versions (must match to play together)
   fixedstep.lua       fixed-timestep clock (60 Hz ticks)
   script.lua          the script sandbox: environment, read-only engine views, limits
   watchdog.lua        ends the game when a level freezes it; blocks frozen downloads
   watchdog_thread.lua the watchdog's thread (heartbeat timeout, report, exit)
   json.lua            JSON decode/encode
   wire.lua            binary encoding for network messages (love.data.pack)
-  levelpack.lua       downloaded level packages: sha256 check, mount at online/<sha256>
+  levelpack.lua       level packages: fingerprints, sha256 check, mount at online/<sha256>
   scenes.lua          scene registry and switching
   input.lua           input sources (keyboard layouts, gamepads) → input frames; custom actions
   mathx.lua           math helpers, easing, seeded random (mathx.newRandom)
@@ -81,6 +85,7 @@ tests/
   sim/safety.lua        script faults, reachability audit, watchdog
   sim/features.lua      input actions, stages, spawning, gravity, finish, camera, levels/topdown
   sim/scene.lua         the gameplay scene
+  sim/net.lua           messages, fingerprints, host and clients over localhost
   run.sh              every suite under every interpreter (sh tests/run.sh)
 ```
 
@@ -257,6 +262,7 @@ Entity events also carry `entity`, the object itself, for local presentation (im
 - Input sources read the level's custom actions too (`source.read(level.actions)`): each action names a key per keyboard layout and gamepad buttons, stick directions or triggers.
 - The scene shows a banner over a stopped level ("This level stopped") or a finished one (`LEVEL CLEAR`, `GAME OVER`, or the outcome word, with the level's message).
 - **Restart vote:** each player toggles a vote (R for layout 1; with `--local-coop` also E for layout 2 and Back on a gamepad). The HUD shows which players voted. While more than half the players vote, a 5 s countdown runs and then the level restarts; dropping to half or fewer cancels it. A restart clears the votes.
+- **Network play:** `love2d . --host` opens a session (UDP port 26967); `love2d . --join <ip[:port]>` joins one. Player ids are stable for the session (`level:addPlayer(player, id)`), so a remote player keeps its id across restarts; remote players are in `level.players` but not in the slots. A client waits for the host's welcome before it has a level. ESC to the main menu ends the session. Design and status: `NETWORKING.md`, `DEVELOPMENT_PHASE.md`.
 - **Restart seed:** this machine is the host and the source of truth (`NETWORKING.md`, Source of truth). It picks each (re)start's seed, queues a `restart{seed}` session message (`gameplay.takeOutbox`) and restarts through `gameplay.restart(seed)`, the same call a client makes on that message; it refuses anything but a whole number in 1..2147483646. The level keeps its seed as `level.seed`.
 - **Respawn count:** `player.respawns` counts respawns (`core/player/state.lua`). A restart carries each slot's count to its new player; winning (`level:finish("win")`) resets every count (`gameplay.resetRespawns`).
 - `love2d . --level <name>` plays another bundled level (default `example`).

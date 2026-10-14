@@ -10,7 +10,7 @@ do
     local walkRight = { read = function() return { right = true } end }
     gameplay.load()
     local loaded = gameplay.takeOutbox()
-    check("the host announces the first seed", #loaded == 1 and loaded[1].type == "restart"
+    check("the host announces the first seed", #loaded == 1 and loaded[1].t == "restart"
         and loaded[1].seed == gameplay.getLevel().seed)
     gameplay.setSource(1, walkRight)
     local second = gameplay.join({ kind = "test", read = function() return { right = true, jump = true } end })
@@ -59,7 +59,7 @@ do
         and gameplay.getLevel() ~= level)
     local sent = gameplay.takeOutbox()
     check("a passed vote sends restart{seed} with the new level's seed", #sent == 1
-        and sent[1].type == "restart" and sent[1].seed == gameplay.getLevel().seed)
+        and sent[1].t == "restart" and sent[1].seed == gameplay.getLevel().seed)
     check("the outbox empties once taken", #gameplay.takeOutbox() == 0)
     check("a restart keeps the respawn counts",
         gameplay.getPlayer(1).respawns == 3 and gameplay.getPlayer(2).respawns == 1)

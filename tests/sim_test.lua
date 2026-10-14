@@ -6,7 +6,7 @@
 -- The checks live in tests/sim/, one file per topic.
 local helpers = require("tests.sim.helpers") -- first: installs the stubs
 
-for _, part in ipairs({ "determinism", "players", "data", "safety", "features", "scene" }) do
+for _, part in ipairs({ "determinism", "players", "data", "safety", "features", "scene", "net" }) do
     require("tests.sim." .. part)
 end
 

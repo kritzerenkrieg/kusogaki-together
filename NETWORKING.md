@@ -326,11 +326,13 @@ Tracked in `OPEN_DECISION.md`.
 ### Session flow
 - **Hosting and joining (Phase 2):** `love2d . --host` opens a session; `love2d . --join <ip>` joins one. Room codes replace typing an IP in Phase 3.
 - **Levels (Phase 2):** bundled levels only. On connect the host checks the level's sha256 and the game version, and refuses a mismatch with a message.
-- **Join:** the current `level.seed` and generation, then a full snapshot on channel 2, then deltas. The new player's machine becomes its owner.
+- **Join (built, `core/net/session.lua`):** `hello{protocol, game}` → the host answers `level{name, fingerprint}` (a refused version gets `reject{reason}`) → the client checks it has the same files and answers `ready{fingerprint}` → the host checks it again and sends `welcome{you, seed, generation, players}`, then a full snapshot on channel 2, and tells the others `joined{id}`. A client must finish within 5 s. The new player's machine becomes its owner. Deltas come in step 3.
+- **Fingerprint:** a bundled level's is the sha256 of its files (sorted paths, sizes, contents; `levelpack.fingerprint`), a downloaded one's is its package hash.
+- **Player ids** stay stable for the session: a remote player keeps its id across restarts; a free id is reused only after its player left.
 - **Late join:** allowed. The new player spawns at the host's latest checkpoint (the host player's current spawn point; a host `setPlayer`).
 - **Leave or time out:** that player is removed for everyone. Anything it carried is dropped. A peer that stops answering for **5 s** is dropped with a clear message, instead of the session hanging. If the host stops answering, every client returns to the menu with a message.
 - **Main menu ends the session.** There is no in-game menu that keeps the game running: going to the main menu (ESC) leaves the session. The host going to the main menu ends the session for everyone.
-- **Restart:** decided by a vote (more than half of all players in the session, then a 5 s countdown; a player joining during the countdown does not cancel it; `scenes/gameplay.lua`). Votes are toggled by clients over the reliable channel; the host counts them, runs the countdown and broadcasts `restart{seed}` (`gameplay.takeOutbox`) with a new generation; everyone, the host included, rebuilds the level through `gameplay.restart(seed)` and the host resends a full snapshot.
+- **Restart:** decided by a vote (more than half of all players in the session, then a 5 s countdown; a player joining during the countdown does not cancel it; `scenes/gameplay.lua`). Votes are toggled by clients over the reliable channel (`vote{on}`); the host counts them, runs the countdown and broadcasts `restart{seed, generation, players}` (`gameplay.takeOutbox`); clients drop a restart whose generation is not newer than theirs; everyone, the host included, rebuilds the level through `gameplay.restart(seed)` and the host resends a full snapshot.
 - **Host leaves:** in v1 the session ends with a message. Host migration comes later. It needs every world field in the net schema so a client can resume from the last full snapshot.
 
 ### Who runs what

@@ -22,6 +22,37 @@ function levelpack.hashFile(path)
     return sha256Hex(data)
 end
 
+-- Fingerprint of a level package root, the same on every machine with the
+-- same files: a downloaded package ("online/<sha256>") is its hash; a bundled
+-- one ("levels/<name>") is the sha256 of its files (sorted paths, sizes and
+-- contents). Hosts and clients compare it before playing together.
+function levelpack.fingerprint(root)
+    local online = root:match("^online/(%x+)$")
+    if online then
+        return online:lower()
+    end
+    local files = {}
+    local function walk(dir, prefix)
+        for _, name in ipairs(love.filesystem.getDirectoryItems(dir)) do
+            local path, relative = dir .. "/" .. name, prefix .. name
+            local info = love.filesystem.getInfo(path)
+            if info and info.type == "directory" then
+                walk(path, relative .. "/")
+            elseif info and info.type == "file" then
+                files[#files + 1] = relative
+            end
+        end
+    end
+    walk(root, "")
+    table.sort(files)
+    local parts = {}
+    for _, relative in ipairs(files) do
+        local data = love.filesystem.read(root .. "/" .. relative) or ""
+        parts[#parts + 1] = relative .. "\0" .. #data .. "\0" .. data
+    end
+    return sha256Hex(table.concat(parts))
+end
+
 -- Mount the zip at `path` (in the save directory) after checking that its
 -- sha256 is `expectedHash`. Returns the package root ("online/<sha256>"), or
 -- nil and an error message. A package the watchdog blocked is refused.

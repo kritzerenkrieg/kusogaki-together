@@ -94,12 +94,26 @@ function Level:get(id)
     return self.byId[id]
 end
 
--- Add a player to the level. Its id is its join slot (1..MAX_PLAYERS). Level
--- scripts' playerJoined(player, level) hooks run (under script limits).
-function Level:addPlayer(player)
+-- Add a player to the level with id `id` (1..MAX_PLAYERS, unused), or the
+-- lowest free id. In network play the session keeps ids stable across
+-- restarts and leaves, so ids can have gaps; `players` stays in join order.
+-- Level scripts' playerJoined(player, level) hooks run (under script limits).
+function Level:addPlayer(player, id)
     assert(#self.players < Level.MAX_PLAYERS, "level is full")
+    local used = {}
+    for _, other in ipairs(self.players) do
+        used[other.id] = true
+    end
+    if id == nil then
+        id = 1
+        while used[id] do
+            id = id + 1
+        end
+    end
+    assert(type(id) == "number" and id % 1 == 0 and id >= 1 and id <= Level.MAX_PLAYERS and not used[id],
+        "invalid or used player id")
     self.players[#self.players + 1] = player
-    player.id = #self.players
+    player.id = id
     self:protect(callHooks, self, "playerJoined", player, self)
     return player
 end

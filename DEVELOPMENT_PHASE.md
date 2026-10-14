@@ -2,7 +2,7 @@
 
 Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Undecided choices are tracked in `OPEN_DECISION.md`. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
 
-Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 starts with ENet host/client).
+Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 step 1, sessions over ENet, done).
 
 ---
 
@@ -91,6 +91,13 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 - Gamepads are deprecated with it: without `--local-coop` the scene ignores every gamepad press. `core/input.lua` keeps its gamepad source.
 - The engine keeps N players (`level.players`, player-vs-player rules): network play needs them. Only the *local* multi-slot input is frozen.
 
+### Phase 2 step 1: sessions over ENet (done)
+- `core/net/protocol.lua` (message types, strict validation of untrusted bytes, port 26967, addresses) and `core/net/session.lua` (ENet host and client, the join handshake, refusals with a reason, 5 s timeouts, session messages). `core/version.lua` holds the game and protocol versions.
+- `love2d . --host` opens a session; `love2d . --join <ip[:port]>` joins one. The host checks game version and level fingerprint (`levelpack.fingerprint`), sends the seed, generation and player list, then a full snapshot. Restarts (`restart{seed, generation, players}`) and votes (`vote{on}`) are networked; joins and leaves are announced; ESC to the menu ends the session.
+- Player ids are stable for the session (`level:addPlayer(player, id)`); a late joiner spawns at the host's latest checkpoint.
+- **Not yet:** clients still simulate the level themselves (the join snapshot is kept in `gameplay.lastSnapshot`, not applied), remote players stand still, and clients only see their own restart vote. Steps 2 and 3 fix that.
+- Checks: `tests/sim/net.lua` (messages, fingerprints, host and clients over localhost: join, snapshot, restart, wrong level, wrong version, garbage, leave, host closing). Checked once by hand: two scratch clients joined a real `love2d . --host` game, got the 72-entity snapshot, voted a restart (generation 1 → 2) and the leave was announced.
+
 ## Next
 
 **Phase 2: LAN netcode over direct IP** (`NETWORKING.md`, Netcode). Model: each machine owns its own player's movement; the host owns the world and the session. Every machine has exactly one local player. Phase 2 is tested on one PC and a LAN; internet play without port forwarding is Phase 3.
@@ -102,7 +109,7 @@ All decisions needed for Phase 2 are made (`OPEN_DECISION.md`, Decided). New ope
 Settled by the model: a custom (script) controller runs on its owner's machine for that player; clients run only the draw hooks and `message` of level scripts.
 
 Then, in rough order:
-1. ENet host/client over direct IP; join sends `level.seed`, the level generation and a full snapshot; the outbox's session messages go on the reliable channel.
+1. ~~ENet host/client over direct IP; join sends `level.seed`, the level generation and a full snapshot; the outbox's session messages go on the reliable channel.~~ Done (above).
 2. Owner → host player state (newest wins, sequence + authority + generation numbers); host forwards it and runs referee checks; `setPlayer` overrides.
 3. Host → clients world snapshots and deltas, periodic full snapshots and a world hash so clients detect drift.
 4. Optimistic claims and their rules (stomps, kicks, deaths, props, checkpoints, `impulse`), then carrying players (`NETWORKING.md`, Interactions between owners).
