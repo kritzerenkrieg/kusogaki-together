@@ -24,7 +24,7 @@ end
 -- (no carry chains).
 local function grabbable(self, body)
     if body.isPlayer then
-        return body ~= self and not body.dead and not body.held and not body.carrying
+        return body ~= self and not body.remote and not body.dead and not body.held and not body.carrying
     end
     return not body.held and not body.killedBy
 end

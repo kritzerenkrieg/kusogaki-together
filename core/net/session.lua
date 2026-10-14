@@ -16,6 +16,7 @@ local session = {}
 local MAX_CLIENTS = protocol.MAX_PLAYERS - 1
 local TIMEOUT_MS = 5000      -- a peer silent this long is dropped (OPEN_DECISION C3)
 local HANDSHAKE_SECONDS = 5  -- a client must finish the handshake within this
+local MAX_STATES = 60        -- player states a client may send per second (20 expected)
 
 local function now()
     return love.timer.getTime()
@@ -45,6 +46,7 @@ Host.__index = Host
 --     snapshot()          -> { generation, data } full snapshot, or nil
 --     left(id)            a joined client left or timed out
 --     vote(id, on)        a joined client's player toggled its restart vote
+--     state(id, message)  a joined client's player state (core/net/playersync.lua)
 -- Returns the host, or nil and an error (port in use).
 function session.host(options)
     local address = (options.bind or "*") .. ":" .. (options.port or protocol.PORT)
@@ -58,7 +60,7 @@ function session.host(options)
         handler = options.handler,
         game = version.GAME, -- versions this host plays (fixed when it opens)
         protocol = version.PROTOCOL,
-        peers = {}, -- peer index -> { peer, stage = "hello" | "ready" | "joined", id, since }
+        peers = {}, -- peer index -> { peer, stage = "hello" | "ready" | "joined", id, since, states }
     }, Host)
 end
 
@@ -106,6 +108,16 @@ local function hostReceive(self, entry, data)
         self:broadcast({ t = "joined", id = id }, id)
     elseif entry.stage == "joined" and message.t == "vote" then
         self.handler.vote(entry.id, message.on)
+    elseif entry.stage == "joined" and message.t == "state" then
+        -- At most MAX_STATES a second; extras are dropped (newest wins anyway).
+        local second = math.floor(now())
+        if entry.second ~= second then
+            entry.second, entry.states = second, 0
+        end
+        entry.states = entry.states + 1
+        if entry.states <= MAX_STATES then
+            self.handler.state(entry.id, message)
+        end
     elseif message.t == "reject" then
         entry.peer:disconnect_later()
         entry.stage = "refused"
@@ -158,6 +170,27 @@ function Host:broadcast(message, exceptId)
     end
 end
 
+-- Send unreliable state (players) to every joined client: newest wins, so a
+-- lost one is simply replaced by the next.
+function Host:broadcastState(message)
+    for _, entry in pairs(self.peers) do
+        if entry.stage == "joined" then
+            send(entry.peer, message, protocol.STATE)
+        end
+    end
+end
+
+-- Send a session message to the client playing player `id` (reliable).
+function Host:sendTo(id, message)
+    for _, entry in pairs(self.peers) do
+        if entry.stage == "joined" and entry.id == id then
+            send(entry.peer, message, protocol.RELIABLE)
+            return true
+        end
+    end
+    return false
+end
+
 -- The ids of the joined clients.
 function Host:clientIds()
     local ids = {}
@@ -199,6 +232,8 @@ Client.__index = Client
 --   snapshot(message)          { generation, data }
 --   restart(message)           { seed, generation, players }
 --   joined(id), left(id)       another player came or went
+--   players(message)           the other players' states { g, list }
+--   setPlayer(message)         the host overrides this machine's player
 --   closed(reason)             the session ended (refused, host gone, timeout)
 -- Returns the client, or nil and an error.
 function session.join(address, handler)
@@ -241,7 +276,7 @@ end
 local CLIENT_EXPECTS = {
     hello = { level = true },
     ready = { welcome = true },
-    joined = { snapshot = true, restart = true, joined = true, left = true },
+    joined = { snapshot = true, restart = true, joined = true, left = true, players = true, setPlayer = true },
 }
 
 local function clientReceive(self, data)
@@ -274,7 +309,7 @@ local function clientReceive(self, data)
     elseif message.t == "joined" or message.t == "left" then
         self.handler[message.t](message.id)
     else
-        self.handler[message.t](message) -- snapshot, restart
+        self.handler[message.t](message) -- snapshot, restart, players, setPlayer
     end
 end
 
@@ -303,6 +338,13 @@ end
 function Client:vote(on)
     if self.stage == "joined" then
         send(self.peer, { t = "vote", on = on == true }, protocol.RELIABLE)
+    end
+end
+
+-- Send this machine's player state { g, s, a, p, e } (unreliable).
+function Client:sendState(message)
+    if self.stage == "joined" then
+        send(self.peer, message, protocol.STATE)
     end
 end
 

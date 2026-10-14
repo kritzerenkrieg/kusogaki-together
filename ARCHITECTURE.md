@@ -57,6 +57,7 @@ core/
   net/                network play (NETWORKING.md)
     protocol.lua        message types, validation of untrusted bytes, port, addresses
     session.lua         ENet host and client: join handshake, refusals, session messages
+    playersync.lua      player state: wire form, puppets, owner sends, host referee, setPlayer
   version.lua         game and protocol versions (must match to play together)
   fixedstep.lua       fixed-timestep clock (60 Hz ticks)
   script.lua          the script sandbox: environment, read-only engine views, limits
@@ -158,10 +159,12 @@ Entity scripts are sandboxed (no `love`, no `require`), so the base `Entity` pro
 The scene runs `Level:update` in fixed 1/60 s ticks through `core/fixedstep.lua`, never with the raw frame time; a frame may run zero or several ticks. Drawing blends moving bodies (players, enemies, props) between the last two ticks (`core/graphics/interp.lua`) and puts them back afterwards, so the simulation never sees a blended position. The camera follows the blended players.
 
 
+**Puppets (network play):** another machine's player is a puppet here (`player.remote`, `core/net/playersync.lua`): the `players` and `playerAnimation` stages skip it, and so do the rules that change a player (`hazards`, `breakBlocks`, `enemyTouch`, `detonations`, `enemyDeaths`, `bounds`; they get `stages.simulated(level)`), because its owner's machine runs those. Rules that only read players (`enemies` waking, `triggers`) see everyone. A puppet is solid but `immovable` (infinite mass, never settled against statics): a local player walking into it stops; one standing on a local player is ignored by that pair. Kicks and grabs skip puppets until claims (Phase 2 step 4). The scene places puppets from received states and moves them on at their last velocity for up to 0.1 s between states (`playersync.advance`).
+
 A step runs the level's `stages` in order (`core/level/stages.lua`; a copy of the list, so a stage may change it). Each level gets fresh stage entries, and scripts may add, remove, replace or reorder them (`level:addStage`, `removeStage`, `replaceStage`, `findStage`). Finishing the level (`level:finish`) ends the step after the current stage. The built-in stages:
 
 1. `input`: `player.pressed` / `player.released` edges for every action name.
-2. `players`: each player's controller, in join order: its own `controller.update`, else `level.playerController.update`, else `player:update` (the platformer: input frame, carry, kick, movement against statics).
+2. `players`: each simulated player's controller, in join order: its own `controller.update`, else `level.playerController.update`, else `player:update` (the platformer: input frame, carry, kick, movement against statics).
 3. `propHits`: a fast prop kills an enemy it overlaps. `propPushOut`: props overlapping an enemy are pushed out of it.
 4. `enemies`: enemy updates, each seeing its own solids and the players.
 5. `props`: prop updates; `animateBlocks`: hazard/block `animate`.
@@ -262,7 +265,7 @@ Entity events also carry `entity`, the object itself, for local presentation (im
 - Input sources read the level's custom actions too (`source.read(level.actions)`): each action names a key per keyboard layout and gamepad buttons, stick directions or triggers.
 - The scene shows a banner over a stopped level ("This level stopped") or a finished one (`LEVEL CLEAR`, `GAME OVER`, or the outcome word, with the level's message).
 - **Restart vote:** each player toggles a vote (R for layout 1; with `--local-coop` also E for layout 2 and Back on a gamepad). The HUD shows which players voted. While more than half the players vote, a 5 s countdown runs and then the level restarts; dropping to half or fewer cancels it. A restart clears the votes.
-- **Network play:** `love2d . --host` opens a session (UDP port 26967); `love2d . --join <ip[:port]>` joins one. Player ids are stable for the session (`level:addPlayer(player, id)`), so a remote player keeps its id across restarts; remote players are in `level.players` but not in the slots. A client waits for the host's welcome before it has a level. ESC to the main menu ends the session. Design and status: `NETWORKING.md`, `DEVELOPMENT_PHASE.md`.
+- **Network play:** `love2d . --host` opens a session (UDP port 26967); `love2d . --join <ip[:port]>` joins one. Player ids are stable for the session (`level:addPlayer(player, id)`), so a remote player keeps its id across restarts; remote players are in `level.players` as puppets but not in the slots; each machine sends its own player's state 20 times a second and the host forwards everyone's (`core/net/playersync.lua`). A client waits for the host's welcome before it has a level. ESC to the main menu ends the session. Design and status: `NETWORKING.md`, `DEVELOPMENT_PHASE.md`.
 - **Restart seed:** this machine is the host and the source of truth (`NETWORKING.md`, Source of truth). It picks each (re)start's seed, queues a `restart{seed}` session message (`gameplay.takeOutbox`) and restarts through `gameplay.restart(seed)`, the same call a client makes on that message; it refuses anything but a whole number in 1..2147483646. The level keeps its seed as `level.seed`.
 - **Respawn count:** `player.respawns` counts respawns (`core/player/state.lua`). A restart carries each slot's count to its new player; winning (`level:finish("win")`) resets every count (`gameplay.resetRespawns`).
 - `love2d . --level <name>` plays another bundled level (default `example`).

@@ -242,6 +242,7 @@ In online play the host runs the world, and each machine moves its own player (`
 - **Moving players from a level script:**
   - *Once* (teleport, launch, respawn): just set it (`player.x = 500`, `player.vy = -400`). The host sends the change to that player's machine.
   - *Continuously* (wind, conveyor, gravity zone, magnet): don't set the player every tick; that arrives late on the player's machine and fights its controls. Put the effect in synced state (`level.gravity`, `body.gravityScale`, a zone list in `level.net`) and let the controller apply it; every machine then pushes its own player smoothly. A player changed every tick anyway is only corrected at the send rate.
+- `player.remote` is true for a player another machine plays (a puppet here). Rules that change a player (hazards, enemy touches, falling out, kicks, grabs) leave it to its own machine; a stage or script you write should do the same (`level.players` holds everyone).
 - What clients must see goes in synced state: entity fields (base fields plus `Type.netFields`), `player.net` (owned by the host), `level.net`, `level.camera`, `level.gravity`, `level.finished`. These must be plain data: numbers, strings, booleans, and tables of those.
 - Drawing hooks run everywhere. Draw from synced state, never from host-only locals.
 - One-off things to show (a popup, a sound) go through `level:send(name, data)`; every machine's `message` hook gets them.

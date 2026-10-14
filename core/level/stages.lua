@@ -51,8 +51,23 @@ local function readInput(level)
     end
 end
 
-local function updatePlayers(level, delta)
+-- Players this machine simulates: all but puppets (`remote`: another
+-- machine plays them, core/net/playersync.lua). Rules that change a player
+-- (deaths, stomps, falling out) run on its owner's machine only; rules that
+-- only read players (enemies waking, triggers) see everyone.
+function stages.simulated(level)
+    local list = {}
     for _, player in ipairs(level.players) do
+        if not player.remote then
+            list[#list + 1] = player
+        end
+    end
+    return list
+end
+local simulated = stages.simulated
+
+local function updatePlayers(level, delta)
+    for _, player in ipairs(simulated(level)) do
         local controller = customUpdate(level, player)
         if controller then
             controller.update(player, delta, level)
@@ -84,7 +99,7 @@ local function updateProps(level, delta)
 end
 
 local function refreshPlayers(level)
-    for _, player in ipairs(level.players) do
+    for _, player in ipairs(simulated(level)) do
         if not customUpdate(level, player) then
             player:refreshAnimationState()
         end
@@ -106,12 +121,12 @@ local DEFAULT_STAGES = {
     { "animateBlocks", function(level, delta) blocks.animate(level, delta) end },
     { "collisions", function(level) physics.resolveBodyCollisions(dynamicBodies(level), level.statics) end },
     { "triggers", function(level) triggers.touch(level, level.players) end },
-    { "hazards", function(level) blocks.touchHazards(level, level.players) end },
-    { "breakBlocks", function(level) blocks.breakTouched(level, level.players) end },
-    { "enemyTouch", function(level) enemies.touchPlayers(level, level.players) end },
-    { "detonations", function(level) props.removeDetonated(level, level.players) end },
-    { "enemyDeaths", function(level) enemies.removeDead(level, level.players) end },
-    { "bounds", function(level) bounds.removeFallen(level, level.players) end },
+    { "hazards", function(level) blocks.touchHazards(level, simulated(level)) end },
+    { "breakBlocks", function(level) blocks.breakTouched(level, simulated(level)) end },
+    { "enemyTouch", function(level) enemies.touchPlayers(level, simulated(level)) end },
+    { "detonations", function(level) props.removeDetonated(level, simulated(level)) end },
+    { "enemyDeaths", function(level) enemies.removeDead(level, simulated(level)) end },
+    { "bounds", function(level) bounds.removeFallen(level, simulated(level)) end },
     { "playerAnimation", refreshPlayers },
     { "scripts", runScripts },
 }

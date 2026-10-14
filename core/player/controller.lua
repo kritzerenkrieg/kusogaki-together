@@ -140,7 +140,7 @@ function controller.kickHits(self, level)
         end
     end
     for _, other in ipairs(level.players) do
-        if other ~= self and not other.dead and not other.held and not self.kickHits[other]
+        if other ~= self and not other.remote and not other.dead and not other.held and not self.kickHits[other]
             and physics.overlaps(box, other) then
             self.kickHits[other] = true
             knockBack(self, other)

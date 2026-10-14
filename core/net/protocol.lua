@@ -13,7 +13,14 @@
 -- Either side may answer with reject { reason } and disconnect.
 -- Session messages afterwards: restart, joined, left (host -> clients);
 -- vote (client -> host: its player's restart vote).
+--
+-- Player state (core/net/playersync.lua), every message stamped with the
+-- level generation g:
+--   client -> host  state { g, s, a, p, e }   own player (channel STATE, 20 Hz)
+--   host -> client  players { g, list }        { id, s, p, e } per player (STATE)
+--   host -> client  setPlayer { g, a, x, y, vx, vy, sx?, sy? }  override (RELIABLE)
 local wire = require("core.wire")
+local playersync = require("core.net.playersync")
 
 local protocol = {}
 
@@ -53,6 +60,32 @@ local function isPlayerList(value)
 end
 
 local isGeneration = function(value) return isInt(value, 0, 2 ^ 31) end
+local isSeq = function(value) return isInt(value, 0, playersync.MAX_SEQ) end
+
+local function isCoordinate(value)
+    return type(value) == "number" and value == value and math.abs(value) <= playersync.MAX_COORD
+end
+
+local function isOptionalCoordinate(value)
+    return value == nil or isCoordinate(value)
+end
+
+-- players.list: at most MAX_PLAYERS entries { id, s, p, e }, ids unique.
+local function isPlayerStates(value)
+    if type(value) ~= "table" or #value > protocol.MAX_PLAYERS or next(value, #value > 0 and #value or nil) ~= nil then
+        return false
+    end
+    local seen = {}
+    for _, entry in ipairs(value) do
+        if type(entry) ~= "table" or #entry ~= 4 or next(entry, 4) ~= nil
+            or not isInt(entry[1], 1, protocol.MAX_PLAYERS) or seen[entry[1]]
+            or not isSeq(entry[2]) or not playersync.valid(entry[3]) or not playersync.validEvents(entry[4]) then
+            return false
+        end
+        seen[entry[1]] = true
+    end
+    return true
+end
 
 -- Field checks per message type. Messages a side does not expect are refused
 -- by the session, not here.
@@ -76,6 +109,13 @@ local SHAPES = {
     joined = { id = function(v) return isInt(v, 1, protocol.MAX_PLAYERS) end },
     vote = { on = function(v) return type(v) == "boolean" end },
     left = { id = function(v) return isInt(v, 1, protocol.MAX_PLAYERS) end },
+    state = { g = isGeneration, s = isSeq, a = isSeq, p = playersync.valid, e = playersync.validEvents },
+    players = { g = isGeneration, list = isPlayerStates },
+    setPlayer = {
+        g = isGeneration, a = isSeq,
+        x = isCoordinate, y = isCoordinate, vx = isCoordinate, vy = isCoordinate,
+        sx = isOptionalCoordinate, sy = isOptionalCoordinate,
+    },
 }
 
 -- Encode a message; raises on a malformed one (that is an engine bug).

@@ -2,7 +2,7 @@
 
 Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Undecided choices are tracked in `OPEN_DECISION.md`. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
 
-Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 step 1, sessions over ENet, done).
+Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 steps 1 and 2, sessions and player state over ENet, done).
 
 ---
 
@@ -95,8 +95,15 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 - `core/net/protocol.lua` (message types, strict validation of untrusted bytes, port 26967, addresses) and `core/net/session.lua` (ENet host and client, the join handshake, refusals with a reason, 5 s timeouts, session messages). `core/version.lua` holds the game and protocol versions.
 - `love2d . --host` opens a session; `love2d . --join <ip[:port]>` joins one. The host checks game version and level fingerprint (`levelpack.fingerprint`), sends the seed, generation and player list, then a full snapshot. Restarts (`restart{seed, generation, players}`) and votes (`vote{on}`) are networked; joins and leaves are announced; ESC to the menu ends the session.
 - Player ids are stable for the session (`level:addPlayer(player, id)`); a late joiner spawns at the host's latest checkpoint.
-- **Not yet:** clients still simulate the level themselves (the join snapshot is kept in `gameplay.lastSnapshot`, not applied), remote players stand still, and clients only see their own restart vote. Steps 2 and 3 fix that.
+- Remote players stood still and clients only saw their own restart vote then; step 2 fixed the first.
 - Checks: `tests/sim/net.lua` (messages, fingerprints, host and clients over localhost: join, snapshot, restart, wrong level, wrong version, garbage, leave, host closing). Checked once by hand: two scratch clients joined a real `love2d . --host` game, got the 72-entity snapshot, voted a restart (generation 1 → 2) and the leave was announced.
+
+### Phase 2 step 2: player state (done)
+- `core/net/playersync.lua`: each machine sends its own player's state 20 times a second (`state`), absolute and newest-wins, stamped with generation, sequence and authority numbers. The host referees it (outside the level, impossibly fast, teleported) and answers the impossible with `setPlayer` and a higher authority; states still stamped with the old one are dropped. The host forwards every player's newest state to every client (`players`). A late joiner gets a `setPlayer` to the host's checkpoint.
+- Other machines' players are **puppets**: not simulated, solid but immovable (players collide, nobody pushes a puppet; `body.immovable` in `core/physics`), skipped by rules that change a player (`stages.simulated`), and not kickable or grabbable yet. Between states a puppet keeps its last velocity for up to 0.1 s. Their jump, stomp and death sounds travel with their state.
+- **Protocol 2** (`core/version.lua`, game 0.1.5): older builds are refused at join.
+- **Not yet:** every machine still simulates the world itself, so enemies, blocks and props can differ between machines (a remote player's stomp, block bump or kick only happens on its own machine) until step 3 (host world snapshots) and step 4 (claims). Clients see only their own restart vote. Host scripts moving a remote player do not send `setPlayer` yet: while clients run their own copy of the scripts the owner's machine already does the same move, so sending it too would apply it twice; it comes with step 3. Custom controllers' own fields (a dash) are not synced; a puppet shows the platformer pose fields only.
+- Checks: `tests/sim/net.lua` (wire form, message checks, referee, puppets in physics and rules, dead reckoning, overrides, and the gameplay scene as host with a client: checkpoint placement, puppet following, the host's state reaching the client, a refused teleport, stale authority and generation). Checked by hand with two headless game processes (host and client running the real scene over localhost): after both stopped moving, each showed both players at the same place (x 153.0 and 466.6).
 
 ## Next
 
@@ -110,8 +117,8 @@ Settled by the model: a custom (script) controller runs on its owner's machine f
 
 Then, in rough order:
 1. ~~ENet host/client over direct IP; join sends `level.seed`, the level generation and a full snapshot; the outbox's session messages go on the reliable channel.~~ Done (above).
-2. Owner → host player state (newest wins, sequence + authority + generation numbers); host forwards it and runs referee checks; `setPlayer` overrides.
-3. Host → clients world snapshots and deltas, periodic full snapshots and a world hash so clients detect drift.
+2. ~~Owner → host player state (newest wins, sequence + authority + generation numbers); host forwards it and runs referee checks; `setPlayer` overrides.~~ Done (above).
+3. Host → clients world snapshots and deltas, periodic full snapshots and a world hash so clients detect drift. Clients stop running world rules and level scripts' update; host scripts moving a remote player then send `setPlayer` (OPEN_DECISION A4); restart votes are shown to everyone.
 4. Optimistic claims and their rules (stomps, kicks, deaths, props, checkpoints, `impulse`), then carrying players (`NETWORKING.md`, Interactions between owners).
 5. Interpolation (~100 ms) of remote players and world bodies; timeouts and clean leave handling.
 6. Done when 5 instances play cleanly on one PC/LAN, stay playable at 150 ms and 5% emulated loss, and never desync or break the session.

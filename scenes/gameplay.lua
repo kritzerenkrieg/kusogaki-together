@@ -21,11 +21,14 @@
 -- through gameplay.restart(seed). Player ids stay stable for the session, so
 -- remote players keep theirs across restarts.
 --
--- Phase 2 step 1 status: sessions, the join handshake, the full snapshot on
--- join, restarts and votes are networked. Clients still simulate the level
--- themselves (the received snapshot is kept in gameplay.lastSnapshot but not
--- applied) and remote players stand still: player state and world sync come
--- in steps 2 and 3.
+-- Player state (step 2, core/net/playersync.lua): each machine owns its own
+-- player and sends its state 20 times a second; the host checks it and
+-- forwards everyone's to everyone. Other machines' players are puppets here.
+--
+-- Phase 2 status: sessions, restarts, votes and player movement are
+-- networked. Every machine still simulates the world itself (the join
+-- snapshot is kept in gameplay.lastSnapshot but not applied), so enemies,
+-- blocks and props can differ between machines until world sync (step 3).
 local sceneEngine = require("core.scenes")
 local fx = require("core.graphics.fx")
 local camera = require("core.graphics.camera")
@@ -43,6 +46,7 @@ local loader = require("core.level.loader")
 local netstate = require("core.level.netstate")
 local levelpack = require("core.levelpack")
 local session = require("core.net.session")
+local playersync = require("core.net.playersync")
 local watchdog = require("core.watchdog")
 
 local gameplay = {}
@@ -80,6 +84,10 @@ local generation = 0        -- the level's (re)start number; messages from older
 
 local net = nil             -- the network session (core/net/session.lua), if any
 local netStatus = nil       -- what to tell the player about the session ("connecting", a reason)
+local owner = playersync.owner() -- this machine's player: send sequence and authority
+local remoteSync = {}       -- host: id -> playersync.remote(); client: id -> newest sequence
+local hostSends = {}        -- host: reliable messages for one client { id, message } (setPlayer)
+local NET_PORT, NET_BIND = nil, nil -- tests host on another port and address
 
 local MAX_SEED = 2147483646 -- seeds are 1..MAX_SEED (the MINSTD generator's range)
 
@@ -120,8 +128,12 @@ local function freeId()
 end
 
 -- Add a player with id `id` at (x, y); that point is also its respawn point.
+-- Another machine's player is a puppet (core/net/playersync.lua).
 local function spawn(x, y, id)
     local player = playerModule.new(x, y)
+    if remoteIds[id] then
+        playersync.makePuppet(player)
+    end
     level:addPlayer(player, id)
     return player
 end
@@ -169,6 +181,11 @@ local function buildLevel(seed)
         if slot then
             player.respawns = slot.player and slot.player.respawns or 0
             slot.player = player
+        end
+    end
+    if NET_MODE == "host" then
+        for _, record in pairs(remoteSync) do
+            record.last, record.forward = nil, nil -- a new level: no previous position
         end
     end
     votes, countdown = {}, nil
@@ -311,6 +328,15 @@ end
 
 -- ── Network play ──────────────────────────────────────────────────────────
 
+-- Sounds for another machine's player events (they arrive with its state).
+local function presentRemoteEvents(id, names, puppet)
+    local list = {}
+    for i, name in ipairs(names) do
+        list[i] = { type = "player", name = name, player = id, x = puppet.x, y = puppet.y }
+    end
+    level:protect(present.all, list, level, localIds())
+end
+
 -- The host's side of the session (core/net/session.lua handler).
 local hostHandler = {
     accept = function()
@@ -324,8 +350,15 @@ local hostHandler = {
     -- checkpoint (the host player's respawn point).
     welcome = function(id)
         remoteIds[id] = true
+        remoteSync[id] = playersync.remote()
         local hostPlayer = slots[1].player
-        spawn(hostPlayer.spawnX, hostPlayer.spawnY, id)
+        local x, y = hostPlayer.spawnX, hostPlayer.spawnY
+        spawn(x, y, id)
+        -- Its machine builds the level at the start; move it to the checkpoint
+        -- (sent after the welcome, on the same reliable channel).
+        local place = playersync.place(remoteSync[id], x, y)
+        place.g = generation
+        hostSends[#hostSends + 1] = { id = id, message = place }
         return { seed = level.seed, generation = generation, players = sessionIds() }
     end,
     -- A full snapshot of the running level (taken under script limits: script
@@ -339,6 +372,7 @@ local hostHandler = {
     end,
     left = function(id)
         remoteIds[id] = nil
+        remoteSync[id] = nil
         local player = playerWithId(id)
         if player then
             removePlayer(player)
@@ -347,6 +381,22 @@ local hostHandler = {
     vote = function(id, on)
         if remoteIds[id] then
             votes[id] = on or nil
+        end
+    end,
+    -- A client's player state: newest wins; the referee refuses the clearly
+    -- impossible and puts the player back with a setPlayer.
+    state = function(id, message)
+        local puppet, record = playerWithId(id), remoteSync[id]
+        if message.g ~= generation or not puppet or not record then
+            return -- from another level generation, or a player not in this level
+        end
+        local result = playersync.receive(record, message, puppet, level, love.timer.getTime())
+        if result == "refused" then
+            local correction = playersync.correction(record, puppet)
+            correction.g = generation
+            hostSends[#hostSends + 1] = { id = id, message = correction }
+        elseif result == "ok" then
+            presentRemoteEvents(id, message.e, puppet)
         end
     end,
 }
@@ -376,6 +426,7 @@ local clientHandler = {
             end
         end
         generation = message.generation
+        owner, remoteSync = playersync.owner(), {}
         gameplay.restart(message.seed)
         netStatus = nil
     end,
@@ -401,11 +452,33 @@ local clientHandler = {
     joined = function(id)
         if id ~= slots[1].id and not remoteIds[id] and level then
             remoteIds[id] = true
-            spawn(level.spawn.x, level.spawn.y, id) -- placed by player sync (step 2)
+            remoteSync[id] = nil -- a new player: its sequence starts again
+            spawn(level.spawn.x, level.spawn.y, id) -- placed by its first state
+        end
+    end,
+    -- The other players' states, forwarded by the host: newest wins per player.
+    players = function(message)
+        if message.g ~= generation or not level then
+            return
+        end
+        for _, entry in ipairs(message.list) do
+            local id = entry[1]
+            local puppet = id ~= slots[1].id and playerWithId(id)
+            if puppet and puppet.remote and playersync.accept(remoteSync, entry, puppet) then
+                presentRemoteEvents(id, entry[4], puppet)
+            end
+        end
+    end,
+    -- The host overrides this machine's player (late join at a checkpoint, a
+    -- refused move).
+    setPlayer = function(message)
+        if message.g == generation and level then
+            playersync.override(owner, slots[1].player, message)
         end
     end,
     left = function(id)
         remoteIds[id] = nil
+        remoteSync[id] = nil
         local player = playerWithId(id)
         if player then
             removePlayer(player)
@@ -420,6 +493,8 @@ local function startNetwork()
     if NET_MODE == "host" then
         local err
         net, err = session.host({
+            port = NET_PORT,
+            bind = NET_BIND,
             level = { name = LEVEL_NAME, fingerprint = levelpack.fingerprint(level.root) },
             handler = hostHandler,
         })
@@ -441,6 +516,25 @@ function gameplay.closeNetwork()
     end
 end
 
+-- 20 times a second: a client sends its player's state to the host; the host
+-- sends every player's newest state to the clients (its own, and the clients'
+-- it accepted since the last send).
+local function sendPlayerState()
+    local own = playersync.nextState(owner, slots[1].player)
+    if NET_MODE == "client" then
+        net:sendState({ t = "state", g = generation, s = own.s, a = own.a, p = own.p, e = own.e })
+        return
+    end
+    local list = { { slots[1].id, own.s, own.p, own.e } }
+    for id, record in pairs(remoteSync) do
+        if record.forward then
+            list[#list + 1] = { id, record.forward.s, record.forward.p, record.forward.e }
+            record.forward = nil
+        end
+    end
+    net:broadcastState({ t = "players", g = generation, list = list })
+end
+
 -- Is this machine playing a level right now (a client waits for its welcome)?
 local function playing()
     return level ~= nil and not (NET_MODE == "client" and (not net or net.stage ~= "joined"))
@@ -454,6 +548,7 @@ function gameplay.load()
     remoteIds = {}
     outbox = {}
     generation = 0
+    owner, remoteSync, hostSends = playersync.owner(), {}, {}
     if NET_MODE == "client" then
         level = nil
     else
@@ -474,21 +569,35 @@ function gameplay.update(delta)
             slot.player.input = slot.source.read(level.actions)
         end
         interp.record(movingBodies())
+        for _, player in ipairs(level.players) do
+            if player.remote then
+                playersync.advance(player, step)
+            end
+        end
         local wasFinished = level.finished
         level:update(step)
         tick = tick + 1
-        level:protect(present.all, level:takeEvents(), level, localIds())
+        local events = level:takeEvents()
+        playersync.noteEvents(owner, events, slots[1].id)
+        level:protect(present.all, events, level, localIds())
         if not wasFinished and level.finished and level.finished.outcome == "win" then
             gameplay.resetRespawns()
         end
         if NET_MODE ~= "client" then
             updateVote(step)
         end
+        if net and tick % playersync.SEND_EVERY == 0 then
+            sendPlayerState()
+        end
     end)
     if NET_MODE == "host" and net then
         for _, message in ipairs(gameplay.takeOutbox()) do
             net:broadcast(message)
         end
+        for _, send in ipairs(hostSends) do
+            net:sendTo(send.id, send.message)
+        end
+        hostSends = {}
     end
 end
 
@@ -616,6 +725,18 @@ end
 
 function gameplay.getGeneration()
     return generation
+end
+
+-- Tests: play as "host" or "client" (address) without a command line, on
+-- another port and bind address. Takes effect at the next gameplay.load.
+function gameplay.configure(options)
+    NET_MODE, JOIN_ADDRESS = options.mode, options.address
+    NET_PORT, NET_BIND = options.port, options.bind
+    LEVEL_NAME = options.level or LEVEL_NAME
+end
+
+function gameplay.getNetwork()
+    return net
 end
 
 -- Replace a slot's input source (tests drive players with scripted sources).
