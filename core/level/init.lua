@@ -60,9 +60,11 @@ function Level.load(nameOrRoot, options)
     self.players = {} -- in join order; see Level:addPlayer
     self.byId = {}    -- entity id -> entity, for every entity still in the level
     self.events = {}  -- events reported since the last takeEvents()
+    self.everyEntity = {} -- entity id -> entity, also after it left (core/level/fullstate.lua revives it)
     for _, list in ipairs({ self.hazards, self.blocks, self.enemies, self.props, self.triggers }) do
         for _, entity in ipairs(list) do
             self.byId[entity.id] = entity
+            self.everyEntity[entity.id] = entity
         end
     end
 
@@ -139,6 +141,7 @@ function Level:spawnEntity(typeName, x, y, def)
         self.statics[#self.statics + 1] = entity
     end
     self.byId[entity.id] = entity
+    self.everyEntity[entity.id] = entity
     events.emit({ type = "spawned", id = entity.id, typeName = typeName, x = x, y = y, def = def })
     return entity
 end

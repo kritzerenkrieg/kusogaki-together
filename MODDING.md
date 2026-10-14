@@ -237,6 +237,7 @@ Draw hooks get `ui`. There is no `love`.
 
 In online play the host runs the world, and each machine moves its own player (`NETWORKING.md`). **You write no network code:** the engine sends everything below by itself. For a level that works online:
 
+- **Keep changing state on objects** (players, entities, `level.net`), never in a script's local variables. The engine saves and restores levels to correct predictions (hybrid rollback): object fields are saved, locals are not.
 - World gameplay (stages, `update`, `onTouch`, entity scripts ...) runs on the host only. Script locals and upvalues are host-only.
 - **Player controllers run on each player's own machine**, for that player only (`level.playerController`, `player.controller`). A controller must read only its player, its input and synced state (`level.gravity`, `level.net`, entity net fields), never host-only locals.
 - **Moving players from a level script:**

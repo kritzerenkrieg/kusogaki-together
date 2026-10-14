@@ -142,21 +142,13 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 
 ## Next
 
-**Phase 2: LAN netcode over direct IP** (`NETWORKING.md`, Netcode). Model: each machine owns its own player's movement; the host owns the world and the session. Every machine has exactly one local player. Phase 2 is tested on one PC and a LAN; internet play without port forwarding is Phase 3.
+**Phase 2, continued: hybrid rollback** (decided 2026-10-14, `OPEN_DECISION.md`). Clients send their inputs; the host simulates every player and the world and is the only source of truth; each client predicts with its own inputs and, when a host snapshot arrives, restores it and replays its newer inputs. Players push each other for real again. Sessions, the protocol, snapshot deltas, the world hash, smoothing and the bad network simulator stay; owner-driven player state, puppets, `setPlayer` overrides and claims (steps 2 and 4 above) are replaced.
 
-Decided: players collide but do not push each other (solid, immovable to each other; kicks shove; an owner that cannot get out of an overlap passes through, so nobody gets stuck). Kick and grab still apply.
-
-All decisions needed for Phase 2 are made (`OPEN_DECISION.md`, Decided). New open questions go there.
-
-Settled by the model: a custom (script) controller runs on its owner's machine for that player; clients run only the draw hooks and `message` of level scripts.
-
-Then, in rough order:
-1. ~~ENet host/client over direct IP; join sends `level.seed`, the level generation and a full snapshot; the outbox's session messages go on the reliable channel.~~ Done (above).
-2. ~~Owner → host player state (newest wins, sequence + authority + generation numbers); host forwards it and runs referee checks; `setPlayer` overrides.~~ Done (above).
-3. ~~Host → clients world snapshots and deltas, periodic full snapshots and a world hash so clients detect drift. Clients stop running world rules and level scripts' update; host scripts moving a remote player then send `setPlayer` (OPEN_DECISION A4); restart votes are shown to everyone.~~ Done (above); the hash replaces periodic full snapshots.
-4. ~~Optimistic claims and their rules (stomps, kicks, deaths, props, checkpoints, `impulse`)~~ Done (above; checkpoints are host-noticed for now). Then carrying players (`NETWORKING.md`, Interactions between owners).
-5. ~~Interpolation (~100 ms) of remote players and world bodies; timeouts and clean leave handling.~~ Done (above), with the `--net-lag <ms> --net-loss <%>` simulator.
-6. Done when 5 instances play cleanly on one PC/LAN, stay playable at 150 ms and 5% emulated loss, and never desync or break the session. Met in headless runs (step 5 above); **next: a play test by hand** (see How to test online), then carrying players and checkpoint claims.
+1. ~~**Save and restore the whole level** (`core/level/fullstate.lua`): every plain field of every player and entity, references as ids, list orders, statics, the random generator, level state.~~ Done: replaying the same inputs from a restored state gives the same states, also in another copy of the level; a full state of the example level is about 18 KB (`tests/sim/rollback.lua`).
+2. **Inputs to the host:** clients send tick-stamped input frames (each packet repeats the last few); the host applies each player's input at its tick (repeating the last one when an input is late) and tells each client how early or late its inputs arrive, so the client runs just far enough ahead.
+3. **Snapshots and reconciliation:** the host sends full-state deltas (per field) with its tick and the last input tick it used per player; a client keeps its own inputs and predicted-state hashes, and when a snapshot differs from what it predicted for that tick it restores it and replays its inputs since.
+4. **Presentation:** effects and sounds only the first time a tick is simulated; level messages only from the host; corrections smoothed instead of snapping.
+5. **Clean-up and the bar again:** remove puppets, owner states, `setPlayer` and claims; real pushing back; 150 ms / 5% loss and 5 instances; then the play test by hand.
 
 How to test online on one PC: `love2d . --host` in one terminal, then `love2d . --join 127.0.0.1` in others (up to 4); add `--net-lag 150 --net-loss 5` to any of them for a bad connection. On a LAN, join the host's IP (UDP port 26967).
 

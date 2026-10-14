@@ -4,6 +4,8 @@ Online play: the level repository, the public lobby and peer-to-peer sessions. T
 
 Sessions hold up to **5 players** (1 host + 4 clients).
 
+> **Changing (2026-10-14): netcode becomes hybrid rollback** (`OPEN_DECISION.md`, `DEVELOPMENT_PHASE.md` Next). The sections Source of truth, Owner → host and Interactions between owners still describe the owner-driven model that is being replaced; they are rewritten as the new steps land.
+
 ---
 
 ## Overview

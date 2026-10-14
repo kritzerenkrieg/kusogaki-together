@@ -18,6 +18,8 @@ Nothing open. Add new questions here as rows: | # | Decision | Proposal | Choice
 
 Most recent first. Each line: date, decision (choice number), where it is written.
 
+- 2026-10-14: **Netcode is hybrid rollback (host-authoritative rollback).** Clients send their inputs to the host; the host simulates every player and the whole world and is the only source of truth. Each client predicts the world with its own inputs (others' last known inputs repeated), and when a host snapshot arrives it restores it and replays its newer inputs. Players push each other for real again (shared push, as in local play). Replaces: owner-driven player movement, puppets, `setPlayer` overrides and claims (Phase 2 steps 2 and 4), and "no client prediction/rewind". Full rollback (GGPO, inputs only, every machine authoritative) was rejected: it needs bit-exact determinism across platforms and mods, and a difference desyncs the session for good. (`NETWORKING.md`, `DEVELOPMENT_PHASE.md`)
+
 - 2026-10-14: The top-down level (`levels/topdown`) is on hold indefinitely: not supported online and not worked on. Syncing custom player fields (its dash) is held with it. (`DEVELOPMENT_PHASE.md`)
 - 2026-10-14: **Modders write no netcode.** The host runs every level script; clients run only draw hooks and `message`. The engine detects what scripts changed in synced state and sends it: world state as deltas against the snapshot each client acknowledged (newest wins, world hash, full snapshot when needed), one-off events on the reliable channel. A host script that moves a remote player sends a `setPlayer` by itself. The one rule for modders: what others must see lives in object fields, not script locals. (`NETWORKING.md` Host → clients, `MODDING.md` Online play)
 
