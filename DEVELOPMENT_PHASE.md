@@ -2,7 +2,7 @@
 
 Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
 
-Last updated: 2026-10-13 (steps 2 and 3 done).
+Last updated: 2026-10-14 (Phase 1 complete, leftovers included; next is Phase 2).
 
 ---
 
@@ -10,6 +10,9 @@ Last updated: 2026-10-13 (steps 2 and 3 done).
 
 | Topic | Decision |
 |---|---|
+| Source of truth | **We cannot trust sync to work perfectly.** The lobby host is the single source of truth for all game state and outcomes; its snapshots overwrite client state and clients converge on it. Details: `NETWORKING.md` (Source of truth). |
+| Players per machine | **One player per machine (per host/client).** Multiplayer means network play. Local couch co-op is **deprecated**: frozen behind `--local-coop`, kept working by the existing tests but not extended, and left for a far-future return. New work (netcode, HUD, input, lobby) assumes one local player and must not add couch co-op complexity. |
+| Gamepads | **Deprecated for now.** The one player plays on keyboard layout 1. Gamepads work only with `--local-coop`; `level.json` actions may still list `gamepad` inputs (accepted, unused otherwise). Gamepad support for the single player can come back later. |
 | Online model | Host-authoritative P2P (ENet/UDP) with a backend for accounts, level repository, lobby, NAT punching and relay. Clients send inputs; the host sends snapshots and events. No lockstep. |
 | Session size | Up to **5 players** (1 host + 4 clients). |
 | Backend stack | Go (or Node) + Postgres + S3-compatible storage. |
@@ -24,7 +27,7 @@ Last updated: 2026-10-13 (steps 2 and 3 done).
 
 ### Phase 0: engine prerequisites (complete)
 - **Fixed timestep:** 60 Hz via `core/fixedstep.lua`, with draw interpolation in `core/graphics/interp.lua`.
-- **Up to 5 players:** `level.players`, `level:addPlayer`, every rule loops over all players, player-on-player physics (standing on heads, shared pushes). Local co-op: keyboard layout 2 joins with I, gamepads with A/Start; per-player tints, HUD and edge markers.
+- **Up to 5 players:** `level.players`, `level:addPlayer`, every rule loops over all players, player-on-player physics (standing on heads, shared pushes). Local co-op (now deprecated, `--local-coop` only): keyboard layout 2 joins with J, gamepads with A/Start; per-player tints, HUD and edge markers.
 - **Input frames:** `core/input.lua`. The simulation reads only `player.input = { left, right, jump, kick, hold }`.
 - **Stable IDs:** entity `id` = its placement's index in `level.json`; `level.byId`, `level:get(id)`; every removal goes through `level:removeEntity`.
 - **Event bus:** `core/level/events.lua` collects what happened; `core/graphics/present.lua` turns it into effects and sound. Rules never call fx, audio or camera.
@@ -74,20 +77,36 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 - Example level: `levels/example/scripts/goal.lua` highlights a zone past the flag pole; the level is won when every player is alive inside it.
 - `player.respawns` survives restarts and resets on a win. Restarting is a toggleable vote (more than half, then a 5 s countdown). See `ARCHITECTURE.md` (Local players); checks in `tests/sim/scene.lua` and `tests/sim/features.lua`.
 
+### Phase 1 leftovers for network play (done)
+- **Local-player view:** the scene passes its players' ids (`localIds()`) to `camera.frame`, `hud.draw` and `present.all`. The camera follows the live local players (then the live remote ones while they are dead); the HUD corner lists local players; local players' events get sound and shake, remote players' only positional sound (`present.soundAt`). Local co-op is unchanged: every player is local.
+- **`restart{seed}`:** the host picks the seed, queues `restart{seed}` (`gameplay.takeOutbox`) and restarts through `gameplay.restart(seed)`, the call a client will make on that message (it refuses bad seeds). `level.seed` keeps the seed.
+- **Source of truth** written down in `NETWORKING.md`: the lobby host decides, clients only ask, the host's snapshots overwrite, drift heals through full snapshots and state hashes.
+- Checks in `tests/sim/features.lua` (local players) and `tests/sim/scene.lua` (restart seed). Behaviour baseline unchanged.
+
+### Local couch co-op deprecated (done)
+- Joining a second local player (J, gamepad A/Start) and the HUD join hint are off unless the game runs with `love2d . --local-coop`. `gameplay.join` stays for that flag and for tests.
+- Gamepads are deprecated with it: without `--local-coop` the scene ignores every gamepad press. `core/input.lua` keeps its gamepad source.
+- The engine keeps N players (`level.players`, player-vs-player rules): network play needs them. Only the *local* multi-slot input is frozen.
+
 ## Next
 
 **Phase 2: LAN netcode over direct IP** (`NETWORKING.md`, Netcode). Open questions to settle first:
 - predicting a player who uses a custom (script) controller: the client would run that script code for its own player;
 - the "view mode" for scripts on clients (draw hooks and `message` only).
 
-Also still open from the earlier work:
-- Phase 1 leftovers for network play: camera, HUD and sounds for the *local* player only;
-- a `restart{seed}` event.
+Every machine has exactly one local player; build Phase 2 for that (don't design around several local slots).
+
+Then, in rough order:
+1. ENet host/client over direct IP; join sends `level.seed` + a full snapshot; the outbox's session messages go on the reliable channel.
+2. Inputs up (`input.pack`), snapshots down, deltas against acked snapshots, periodic full snapshots and a state hash so clients detect drift.
+3. Prediction of the own player with rewind/replay; interpolation (~100 ms) of everyone else.
+4. Simulation in its own thread (watchdog option B).
+5. Done when 5 instances play cleanly on one PC/LAN and stay playable at 150 ms and 5% emulated loss.
 
 ### Roadmap after that (from `NETWORKING.md`)
 | Phase | Scope |
 |---|---|
-| 1 | Local co-op polish (mostly done during Phase 0) |
+| 1 (done) | Local co-op polish, plus the local-player view and `restart{seed}` |
 | 2 | LAN netcode over direct IP: ENet, snapshots and deltas, prediction, interpolation. Option B of the watchdog fits here. |
 | 3 | Backend: accounts + level repository (upload pipeline, asset conversion, headless load test) |
 | 4 | Lobby + NAT punching + relay. Needs HTTPS: LÖVE 11.5 has no TLS, so ship `lua-https` or move to LÖVE 12. |
@@ -108,11 +127,12 @@ Also still open from the earlier work:
 
   If those numbers move, the change altered gameplay.
 - **Speed baseline:** about 0.5 ms per tick with the protections on (≈0.23 ms without).
-- **Commits:** Phase 0 and step 1 are in `a91b41f v0.1.0`. Steps 2 and 3 are uncommitted.
+- **Commits:** Phase 0 and step 1 are in `a91b41f v0.1.0`; steps 2 and 3, kick/carry and the goal/respawn/vote work are in `7cc3f1d v0.1.1`. The Phase 1 leftovers and the co-op/gamepad deprecation are in `v0.1.2`.
 - **Not yet checked in a real window:**
   - effects, sound and shake via events;
   - package-relative images;
   - the "This level stopped" and finish screens;
-  - gamepad joining;
+  - gamepad joining (deprecated with couch co-op; only with `--local-coop`);
   - the camera zoom and vertical follow (`--level topdown`);
   - the watchdog notice on the next launch.
+  - remote players' positional sound (needs network play to see for real; covered by checks for now).

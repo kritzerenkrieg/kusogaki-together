@@ -1,5 +1,5 @@
 -- Gameplay HUD: each local player's state in the corner, markers at the screen
--- edge for players outside the view, and a join hint. Level-specific overlays
+-- edge for every player outside the view (local or remote), and a join hint. Level-specific overlays
 -- (e.g. the example level's controls tutorial) are level scripts, not part of
 -- the HUD.
 local text = require("core.text")
@@ -30,13 +30,18 @@ local function drawEdgeMarker(player)
     end
 end
 
--- players: the level's players in join order; canJoin: show the join hint.
-function hud.draw(players, canJoin)
-    for i, player in ipairs(players) do
-        local carried = player.carrying
-        local carry = carried and (carried.isPlayer and ("P" .. carried.id) or carried.name) or "-"
-        setTint(player, 0.85)
-        text.print(("P%d %s  CARRY: %s"):format(player.id, player.state:upper(), carry), 8, 8 + (i - 1) * 12, 10)
+-- players: the level's players in join order; canJoin: show the join hint;
+-- locals: the ids of the players this machine plays (nil: all of them).
+function hud.draw(players, canJoin, locals)
+    local row = 0
+    for _, player in ipairs(players) do
+        if locals == nil or locals[player.id] then
+            local carried = player.carrying
+            local carry = carried and (carried.isPlayer and ("P" .. carried.id) or carried.name) or "-"
+            setTint(player, 0.85)
+            text.print(("P%d %s  CARRY: %s"):format(player.id, player.state:upper(), carry), 8, 8 + row * 12, 10)
+            row = row + 1
+        end
         if not player.dead then
             drawEdgeMarker(player)
         end

@@ -38,6 +38,7 @@ function Level.load(nameOrRoot, options)
     self.name = data.name
     self.root = data.root     -- package root: assets and package sounds live here
     self.random = data.random -- seeded generator; scripts get it as `random`
+    self.seed = options and options.seed or 1 -- what seeded it (the host picks it)
     local size = data.size or {}
     self.width = size.w or render.width   -- world size (px); the camera stays inside it
     self.height = size.h or render.height -- falling below this is falling out

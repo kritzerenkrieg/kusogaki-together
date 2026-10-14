@@ -119,6 +119,39 @@ do
     check("world to screen positions", sx == 1000 - 1680)
 end
 
+-- ── Local players: camera, sound and shake follow this machine's players ──
+do
+    local camera = require("core.graphics.camera")
+    local present = require("core.graphics.present")
+    local level = Level.load("example")
+    local mine = level:addPlayer(playerModule.new(1000, 200))
+    local other = level:addPlayer(playerModule.new(2000, 200))
+    camera.frame(level, { [mine.id] = true })
+    check("the camera follows only the local player", camera.x == 680, camera.x)
+    mine.dead = true
+    camera.frame(level, { [mine.id] = true })
+    check("a dead local player watches the live remote ones", camera.x == 1680, camera.x)
+    camera.frame(level)
+    check("without a local set every player is local", camera.x == 1680, camera.x)
+
+    camera.active = false
+    present.event({ type = "player", name = "kick", player = other.id, x = other.x, y = other.y }, level,
+        { [mine.id] = true })
+    check("a remote player's kick does not shake this screen", not camera.active)
+    present.event({ type = "player", name = "kick", player = mine.id, x = mine.x, y = mine.y }, level,
+        { [mine.id] = true })
+    check("a local player's kick shakes the screen", camera.active)
+    camera.active = false
+
+    camera.frame(level, { [other.id] = true }) -- view 1680..2320
+    local near, far, left = present.soundAt(2000), present.soundAt(9000), present.soundAt(1100)
+    check("remote sounds: full in view, silent far away, panned to their side",
+        near.volume == 1 and near.pan == 0 and far.volume == 0 and left.volume < 1 and left.volume > 0
+        and left.pan == -1, ("%s %s %s"):format(near.volume, far.volume, left.volume))
+    check("a script's event with no position is silent, not a fault", pcall(present.event,
+        { type = "player", name = "jump", player = other.id, x = "here" }, level, { [mine.id] = true }))
+end
+
 -- ── A different game: the top-down coin race (levels/topdown) ───────────
 
 do

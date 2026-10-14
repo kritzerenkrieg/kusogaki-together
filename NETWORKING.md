@@ -36,11 +36,25 @@ Gameplay Lua runs only on the host, so hidden script state (locals, upvalues) ne
 
 Lockstep and rollback (every peer runs the same simulation) are rejected. LuaJIT floats, `math.sin`/`math.atan2` and order-dependent pair resolution (`core/physics/collision.lua`) are not guaranteed bit-identical across machines, so peers would drift.
 
+
+### Source of truth: the lobby host
+
+**We cannot trust sync to work perfectly.** Packets get lost, reordered and delayed; client prediction guesses; floats and script code can make two machines drift even from the same inputs. So the design never assumes a client's copy is right. It keeps one source of truth, the lobby host, and makes every client converge on it.
+
+- **One owner per decision.** The host alone decides game state and every outcome: physics, deaths, stomps, grabs, block breaks, checkpoints, spawns, script state, wins/losses, restart votes and the seed of each (re)start. A client never decides any of these, not even about its own player.
+- **Clients only ask.** A client sends inputs, restart votes and chat. It never sends positions, hits, scores or other state, and the host would ignore them.
+- **The host's word overwrites.** Every snapshot replaces what a client holds: prediction is rewound and replayed on top of it, and remote bodies are drawn from it. A client never "merges" its own guess back in.
+- **Drift heals itself.** Deltas are against a snapshot the client acknowledged, and the host sends a full snapshot on join, on restart, when a client falls too far behind, and periodically. Anything a client got wrong is corrected by the next one instead of piling up.
+- **Detect, don't hope.** Snapshots carry a tick number and a cheap state hash; a client whose rebuilt state does not match asks for a full snapshot (and logs it in debug builds).
+- **Everything from the wire is untrusted input.** The host validates every client message (input bits, vote toggles, rates); clients validate the host's too (`core/wire.lua` is safe for untrusted bytes; `gameplay.restart(seed)` refuses a bad seed).
+- **Same path for host and clients.** The host restarts through the same `gameplay.restart(seed)` a client calls on `restart{seed}`, so the two cannot diverge in how a level is rebuilt.
+- **Presentation may differ; state may not.** Effects, debris, shake and sounds are local and may look different on each machine. Nothing that affects play may come from them.
+
 ---
 
 ## Engine prerequisites
 
-These must land before any networking code. Each is useful on its own, and together they also give local co-op.
+These must land before any networking code. Each is useful on its own, and together they also gave local co-op (now deprecated: one player per machine, see N players).
 
 ### Fixed timestep (done)
 - `scenes/gameplay.lua` runs `Level:update(1/60)` through `core/fixedstep.lua`: as many ticks as the elapsed time needs, at most 5 per frame.
@@ -57,8 +71,8 @@ These must land before any networking code. Each is useful on its own, and toget
 - `Level` has a `players` list; `level:addPlayer(player)` assigns ids 1–5 in join order. `level:update(dt)` steps every player; each reads its own `input` frame.
 - Every rule loops over `players` in join order: hazards, block breaking (mark, then remove), enemy touches and stomps, triggers, blasts and falling out.
 - **Physics:** players are solid to each other and stand on each other's heads (`oneway.playerPair` makes the higher one land); a sideways push is shared by mass.
-- **Local co-op works:** up to 5 players on one machine (keyboard layouts and gamepads, `core/input.lua`). The camera follows the group; the HUD shows every player and edge arrows for those off screen.
-- **Left for network play:** camera, HUD and shake/sound must follow the *local* player only; remote players' events get positional sound only.
+- **One player per machine.** Network play has exactly one local player on each machine (host and clients), so up to 5 machines in a session. Local couch co-op (up to 5 players on one machine via keyboard layouts and gamepads) still works behind `--local-coop`, but is **deprecated**: frozen, not extended, and left for a far-future return. Netcode does not need to handle several local players per machine.
+- **Local players (done):** the scene passes the ids of the players this machine plays (`locals`, every slot in local play) to `camera.frame`, `hud.draw` and `present.all`. The camera's `"players"` follow uses the live local players, then the live remote ones (watch the others while dead); the HUD corner lists local players, edge markers show everyone; a local player's events get full sound and shake, a remote player's only sound, at the volume and pan of where it happened (`present.soundAt`).
 - **Checkpoints** are per player (`player:setSpawn`). The flag and sound stay shared (first touch).
 
 ### Input frames (done)
@@ -96,12 +110,12 @@ These must land before any networking code. Each is useful on its own, and toget
 - Rules report events (`core/level/events.lua`) instead of calling `fx`, `audio` and `camera`; `core/graphics/present.lua` shows them after each tick. The event list is in `ARCHITECTURE.md` (Events).
 - Local play presents events at once. In network play the host also sends them (`netstate.event`) on the reliable channel; a client resolves `id` to its own copy of the entity for images.
 - Debris, corpses and explosion particles are cosmetic and stay local. Each machine randomizes them with `love.math.random`, as now.
-- Still to add for network play: `restart{seed}` and positional sound for remote players' events.
+- `restart{seed}` (done): a session message, not a level event, since it replaces the level. The host queues it (`gameplay.takeOutbox`) and every machine restarts through `gameplay.restart(seed)`. Remote players' events get positional sound (see N players).
 
 ### Seeded RNG (done)
 - `mathx.newRandom(seed)` (`core/mathx.lua`) is a plain-Lua Lehmer generator (MINSTD, 48271): exact in doubles, so every machine and both interpreters produce the same numbers. `tests/sandbox_test.lua` checks it against the MINSTD reference value.
 - Each level has one, `level.random`, seeded by `Level.load(root, { seed })`. Scripts get it as `random(m, n)`; their `math` copy has no `random`/`randomseed`.
-- The scene picks a new seed per (re)start; in network play the host picks it and sends it in `restart`. `getState`/`setState` let a snapshot carry the generator for host migration later.
+- The host picks a new seed per (re)start (`level.seed`) and sends it in `restart{seed}`; a joining client also needs it, since entity types may use `random` while loading. `getState`/`setState` let a snapshot carry the generator for host migration later.
 - Cosmetic effects (debris, shake) keep `love.math.random`; they stay local.
 
 ### Sandbox hardening (done)
@@ -267,10 +281,10 @@ Uploads may use common media types. The server normalizes them so every client g
   - The client may play the local pose (kick swing, jump) at once.
 
 ### Session flow
-- **Join:** full snapshot on channel 2, then deltas.
+- **Join:** the current `level.seed`, then a full snapshot on channel 2, then deltas.
 - **Late join:** allowed. The new player spawns at the level spawn.
 - **Leave:** that player is removed for everyone. Anything it carried is dropped.
-- **Restart:** decided by a vote (more than half the players, then a 5 s countdown; `scenes/gameplay.lua`). Votes are toggled by clients over the reliable channel; the host counts them, runs the countdown and broadcasts `restart{seed}`; everyone rebuilds the level from the package and the host resends a full snapshot.
+- **Restart:** decided by a vote (more than half the players, then a 5 s countdown; `scenes/gameplay.lua`). Votes are toggled by clients over the reliable channel; the host counts them, runs the countdown and broadcasts `restart{seed}` (`gameplay.takeOutbox`); everyone, the host included, rebuilds the level through `gameplay.restart(seed)` and the host resends a full snapshot.
 - **Host leaves:** in v1 the session ends with a message. Host migration comes later. It needs every simulation field in the net schema so a client can resume from the last full snapshot.
 
 ### Who runs what

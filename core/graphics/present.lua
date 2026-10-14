@@ -3,6 +3,7 @@
 local fx = require("core.graphics.fx")
 local audio = require("core.audio")
 local feedback = require("core.player.feedback")
+local camera = require("core.graphics.camera")
 
 local present = {}
 
@@ -12,6 +13,19 @@ end
 
 local function image(event)
     return event.entity and event.entity.image
+end
+
+local HEARING = 1 -- view widths past the view's edge where remote sounds fade out
+
+-- Volume and pan for a sound at world x, from the current view: full volume
+-- inside it, fading to silence HEARING view widths beyond its edge; panned
+-- toward the side it came from.
+function present.soundAt(x)
+    local left, _, width = camera.view()
+    local offset = (x - (left + width / 2)) / (width / 2) -- -1..1 across the view
+    local pan = math.min(math.max(offset, -1), 1)
+    local outside = math.max(0, math.abs(offset) - 1) / (2 * HEARING)
+    return { volume = math.max(0, 1 - outside), pan = pan }
 end
 
 local HANDLERS = {
@@ -51,9 +65,15 @@ local HANDLERS = {
             audio.playSfx(event.name)
         end
     end,
-    -- Something happened to a player (jump, death, kick...): sound and shake.
-    player = function(event)
-        feedback.onEvent(event.name)
+    -- Something happened to a player (jump, death, kick...): sound and shake
+    -- for a local player, positional sound only for a remote one.
+    player = function(event, _, locals)
+        local remote = nil
+        if locals and not locals[event.player] then
+            -- Scripts can put events in the queue too: x may be anything.
+            remote = type(event.x) == "number" and present.soundAt(event.x) or { volume = 0, pan = 0 }
+        end
+        feedback.onEvent(event.name, remote)
     end,
     -- A level script's message (Level:send): its message hooks show it.
     message = function(event, level)
@@ -66,16 +86,17 @@ local HANDLERS = {
     finish = function() end,
 }
 
-function present.event(event, level)
+-- `locals`: the ids of the players this machine plays (nil: all of them).
+function present.event(event, level, locals)
     local handler = HANDLERS[event.type]
     if handler then
-        handler(event, level)
+        handler(event, level, locals)
     end
 end
 
-function present.all(list, level)
+function present.all(list, level, locals)
     for _, event in ipairs(list) do
-        present.event(event, level)
+        present.event(event, level, locals)
     end
 end
 

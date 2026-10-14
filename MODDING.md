@@ -187,7 +187,7 @@ end
 
 ## Input
 
-Every level has `left, right, jump, kick, hold`. A level adds its own actions in `level.json`, with one key per keyboard layout (player 1, player 2) and gamepad inputs:
+Every level has `left, right, jump, kick, hold`. A level adds its own actions in `level.json`, with one key per keyboard layout (player 1, player 2) and gamepad inputs. Only the first key is used in normal play: player 2's key and the gamepad inputs are for the deprecated couch co-op (`--local-coop`) and are still accepted so levels stay valid:
 
 ```json
 "actions": [

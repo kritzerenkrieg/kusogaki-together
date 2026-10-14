@@ -250,11 +250,14 @@ Entity events also carry `entity`, the object itself, for local presentation (im
 ## Local players
 
 - `scenes/gameplay.lua` keeps one slot per local player: an input source (`core/input.lua`) and the player it drives. Player 1 is keyboard layout 1 (arrows, Z jump, X grab, C kick, R restart vote).
-- **Joining:** press J (keyboard layout 2: A/D move, J jump, K grab, L kick, E restart vote; W/S for levels with up/down actions) or A/Start on a gamepad (D-pad or left stick, A jump, X grab, B/Y kick). Up to 5 players; each device joins once.
-- Each player has a tint (`config.TINTS`, player 1 untinted). The HUD lists every player's state and draws an arrow at the screen edge for a player outside the view.
+- **One player per machine, on the keyboard.** Multiplayer is network play. Gamepads are deprecated for now (only used with `--local-coop`). Local couch co-op below is **deprecated** and only on with `love2d . --local-coop`; it is kept working, not extended.
+- **Joining (deprecated, `--local-coop` only):** press J (keyboard layout 2: A/D move, J jump, K grab, L kick, E restart vote; W/S for levels with up/down actions) or A/Start on a gamepad (D-pad or left stick, A jump, X grab, B/Y kick). Up to 5 players; each device joins once.
+- Each player has a tint (`config.TINTS`, player 1 untinted). The HUD lists every local player's state and draws an arrow at the screen edge for any player outside the view.
+- **Local vs remote:** the scene's slots are this machine's players (`localIds()`, every player in local play). The camera, the HUD corner, shake and full sound follow them; a remote player's events (network play) get positional sound only (`present.soundAt`). See `NETWORKING.md` (N players).
 - Input sources read the level's custom actions too (`source.read(level.actions)`): each action names a key per keyboard layout and gamepad buttons, stick directions or triggers.
 - The scene shows a banner over a stopped level ("This level stopped") or a finished one (`LEVEL CLEAR`, `GAME OVER`, or the outcome word, with the level's message).
-- **Restart vote:** each player toggles a vote (R for layout 1, E for layout 2, Back on a gamepad). The HUD shows which players voted. While more than half the players vote, a 5 s countdown runs and then the level restarts; dropping to half or fewer cancels it. A restart clears the votes.
+- **Restart vote:** each player toggles a vote (R for layout 1; with `--local-coop` also E for layout 2 and Back on a gamepad). The HUD shows which players voted. While more than half the players vote, a 5 s countdown runs and then the level restarts; dropping to half or fewer cancels it. A restart clears the votes.
+- **Restart seed:** this machine is the host and the source of truth (`NETWORKING.md`, Source of truth). It picks each (re)start's seed, queues a `restart{seed}` session message (`gameplay.takeOutbox`) and restarts through `gameplay.restart(seed)`, the same call a client makes on that message; it refuses anything but a whole number in 1..2147483646. The level keeps its seed as `level.seed`.
 - **Respawn count:** `player.respawns` counts respawns (`core/player/state.lua`). A restart carries each slot's count to its new player; winning (`level:finish("win")`) resets every count (`gameplay.resetRespawns`).
 - `love2d . --level <name>` plays another bundled level (default `example`).
 

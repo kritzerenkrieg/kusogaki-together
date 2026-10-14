@@ -9,6 +9,9 @@ do
     local gameplay = require("scenes.gameplay")
     local walkRight = { read = function() return { right = true } end }
     gameplay.load()
+    local loaded = gameplay.takeOutbox()
+    check("the host announces the first seed", #loaded == 1 and loaded[1].type == "restart"
+        and loaded[1].seed == gameplay.getLevel().seed)
     gameplay.setSource(1, walkRight)
     local second = gameplay.join({ kind = "test", read = function() return { right = true, jump = true } end })
     local again = gameplay.join({ kind = "test", read = walkRight.read })
@@ -54,6 +57,10 @@ do
     tick(0.6)
     check("restarting a stopped level gives a working level", not gameplay.getLevel().faulted
         and gameplay.getLevel() ~= level)
+    local sent = gameplay.takeOutbox()
+    check("a passed vote sends restart{seed} with the new level's seed", #sent == 1
+        and sent[1].type == "restart" and sent[1].seed == gameplay.getLevel().seed)
+    check("the outbox empties once taken", #gameplay.takeOutbox() == 0)
     check("a restart keeps the respawn counts",
         gameplay.getPlayer(1).respawns == 3 and gameplay.getPlayer(2).respawns == 1)
     level = gameplay.getLevel()
@@ -64,4 +71,16 @@ do
     tick(1 / 60)
     check("winning resets the respawn counts",
         gameplay.getPlayer(1).respawns == 0 and gameplay.getPlayer(2).respawns == 0)
+
+    -- A client restarts on the host's seed: same seed, same generator.
+    local before = gameplay.getLevel()
+    check("bad restart seeds are refused", gameplay.restart(0) == false and gameplay.restart(1.5) == false
+        and gameplay.restart("7") == false and gameplay.restart(2 ^ 31) == false
+        and gameplay.getLevel() == before)
+    check("restart(seed) rebuilds with that seed", gameplay.restart(12345) and gameplay.getLevel() ~= before
+        and gameplay.getLevel().seed == 12345)
+    local first = gameplay.getLevel().random:random(1, 1000000)
+    gameplay.restart(12345)
+    check("the same seed gives the same random numbers", gameplay.getLevel().random:random(1, 1000000) == first)
+    check("a client-side restart sends nothing", #gameplay.takeOutbox() == 0)
 end

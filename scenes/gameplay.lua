@@ -1,11 +1,23 @@
--- Gameplay scene: loads a level and its local players, and runs them.
+-- Gameplay scene: loads a level and its local player, and runs it.
 -- Each player is a slot { source, player }: an input device (core/input.lua)
 -- and the player it drives. Slots survive restarts; players do not (their
 -- respawn counts do).
 --
+-- One player per machine: multiplayer is network play. Local couch co-op
+-- (more slots joined from keyboard layout 2 or gamepads) is deprecated and
+-- frozen for a far-future return: off unless `--local-coop` is on the
+-- command line, and not maintained beyond keeping it working. Gamepads are
+-- deprecated with it: the one player plays on the keyboard.
+--
 -- Restarting is a vote: each player toggles their vote (R / E / gamepad Back).
 -- While more than half the players vote, a countdown runs and then the level
 -- restarts; dropping below half cancels it.
+--
+-- This machine is the host (local play is always hosted). The host is the
+-- source of truth: it picks each (re)start's seed and announces it as a
+-- `restart{seed}` session message (gameplay.takeOutbox); every machine,
+-- the host included, restarts through gameplay.restart(seed). See
+-- NETWORKING.md (Source of truth).
 local sceneEngine = require("core.scenes")
 local fx = require("core.graphics.fx")
 local camera = require("core.graphics.camera")
@@ -27,9 +39,12 @@ local gameplay = {}
 -- The level to play: "example", or `--level <name>` on the command line
 -- (e.g. `love2d . --level topdown`).
 local LEVEL_NAME = "example"
+local LOCAL_COOP = false -- deprecated couch co-op (see the top of this file)
 for i, value in ipairs(arg or {}) do
     if value == "--level" and arg[i + 1] then
         LEVEL_NAME = arg[i + 1]
+    elseif value == "--local-coop" then
+        LOCAL_COOP = true
     end
 end
 
@@ -41,6 +56,9 @@ local alpha = 0                     -- how far the frame sits between ticks (dra
 local RESTART_COUNTDOWN = 5 -- seconds from a passed restart vote to the restart
 local votes = {}            -- player id -> true: votes to restart
 local countdown = nil       -- seconds left until the restart, while the vote passes
+local outbox = {}           -- session messages for the other machines (network play)
+
+local MAX_SEED = 2147483646 -- seeds are 1..MAX_SEED (the MINSTD generator's range)
 
 -- Add a player for a slot at (x, y); that point is also its respawn point.
 local function spawn(x, y)
@@ -49,13 +67,12 @@ local function spawn(x, y)
     return player
 end
 
-local function buildLevel()
+local function buildLevel(seed)
     -- The watchdog blames a freeze from here on (even while scripts load) on
     -- this level.
     local root = loader.rootFor(LEVEL_NAME)
     watchdog.enter(root)
-    -- A fresh seed per (re)start; in network play the host picks it.
-    level = Level.load(root, { seed = love.math.random(1, 2147483646) })
+    level = Level.load(root, { seed = seed })
     fx.clearEffects(level)
     for _, slot in ipairs(slots) do
         local respawns = slot.player and slot.player.respawns or 0
@@ -68,11 +85,51 @@ local function buildLevel()
     alpha = 0
 end
 
+-- The ids of the players this machine plays: every slot's player. Camera,
+-- HUD, shake and full sound follow these; other players' events only get
+-- positional sound. In local play that is every player.
+local function localIds()
+    local ids = {}
+    for _, slot in ipairs(slots) do
+        ids[slot.player.id] = true
+    end
+    return ids
+end
+
+-- Rebuild the level from its package with the host's seed. The host calls it
+-- after a passed vote; a client will call it on the host's restart{seed}
+-- message, so the seed is checked like any network input. Returns false for a
+-- bad seed (nothing changes).
+function gameplay.restart(seed)
+    if type(seed) ~= "number" or seed % 1 ~= 0 or seed < 1 or seed > MAX_SEED then
+        return false
+    end
+    buildLevel(seed)
+    return true
+end
+
+-- Host only: pick a fresh seed, announce it, and restart with it.
+local function hostRestart()
+    local seed = love.math.random(1, MAX_SEED)
+    outbox[#outbox + 1] = { type = "restart", seed = seed }
+    gameplay.restart(seed)
+end
+
+-- The session messages queued for the other machines since the last call, in
+-- order; the list is then empty. Network play sends them on the reliable
+-- channel.
+function gameplay.takeOutbox()
+    local list = outbox
+    outbox = {}
+    return list
+end
+
 local function sameDevice(a, b)
     return a.kind == b.kind and a.layout == b.layout and a.joystick == b.joystick
 end
 
--- Join a new local player driven by `source`. It appears at player 1's current
+-- Deprecated (local couch co-op): only `--local-coop` key/gamepad presses and
+-- tests call it. Join a new local player driven by `source`. It appears at player 1's current
 -- respawn point (their last checkpoint). Returns the player, or nil when the
 -- level is full or the device already plays.
 function gameplay.join(source)
@@ -124,7 +181,7 @@ local function updateVote(step)
     end
     countdown = (countdown or RESTART_COUNTDOWN) - step
     if countdown <= 0 then
-        buildLevel()
+        hostRestart()
     end
 end
 
@@ -154,7 +211,8 @@ end
 function gameplay.load()
     playerModule.load()
     slots = { { source = input.keyboard(1) } }
-    buildLevel()
+    outbox = {}
+    hostRestart()
 end
 
 function gameplay.update(delta)
@@ -165,7 +223,7 @@ function gameplay.update(delta)
         interp.record(movingBodies())
         local wasFinished = level.finished
         level:update(step)
-        level:protect(present.all, level:takeEvents(), level)
+        level:protect(present.all, level:takeEvents(), level, localIds())
         if not wasFinished and level.finished and level.finished.outcome == "win" then
             gameplay.resetRespawns()
         end
@@ -178,7 +236,7 @@ function gameplay.keypressed(key)
         fx.toScene("menu", 0.5, { ease = "smoothstep" })
     elseif input.layoutForKey(key, "restart") then
         gameplay.toggleVote(slotIndexFor(input.keyboard(input.layoutForKey(key, "restart"))))
-    else
+    elseif LOCAL_COOP then
         local layout = input.layoutForKey(key, "jump")
         if layout then
             gameplay.join(input.keyboard(layout))
@@ -186,7 +244,12 @@ function gameplay.keypressed(key)
     end
 end
 
+-- Gamepads are deprecated for now: they only work with `--local-coop`, as
+-- joined couch co-op players. The single player plays on the keyboard.
 function gameplay.gamepadpressed(joystick, button)
+    if not LOCAL_COOP then
+        return
+    end
     if button == input.GAMEPAD_RESTART then
         gameplay.toggleVote(slotIndexFor(input.gamepad(joystick)))
     elseif button == "a" or button == "start" then
@@ -200,7 +263,7 @@ local worldPushed = false -- camera.pushWorld is active (popped even after a fai
 -- entities, events and level scripts may run script code while drawing.
 local function drawLevel()
     interp.apply(movingBodies(), alpha)
-    camera.frame(level)
+    camera.frame(level, localIds())
     level:drawBackground()
     camera.pushWorld()
     worldPushed = true
@@ -213,7 +276,7 @@ local function drawLevel()
     camera.popWorld()
     worldPushed = false
     level:drawHud()
-    hud.draw(level.players, #slots < Level.MAX_PLAYERS)
+    hud.draw(level.players, LOCAL_COOP and #slots < Level.MAX_PLAYERS, localIds())
 end
 
 -- A full-screen message over the level: a title, a line of detail, and the

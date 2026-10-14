@@ -87,6 +87,7 @@ The full design (engine prerequisites, level repository, lobby, connectivity, ne
 ## Authority and Security
 
 - Host is authoritative. Clients send inputs, not state.
+- Sync is never trusted to be perfect: the lobby host is the single source of truth, its snapshots overwrite client state, and clients converge on it (full snapshots, state hashes). See `NETWORKING.md` (Source of truth).
 - Lua affecting gameplay runs in the authoritative simulation.
 - Community levels cannot run system code.
 - Native engine changes are separate from level content and need explicit install/trust.
