@@ -1,0 +1,3 @@
+# Keep LF everywhere: a level's fingerprint is a hash of its raw file bytes
+# (core/levelpack.lua), so a CRLF checkout on Windows could not join a host.
+* text=auto eol=lf
