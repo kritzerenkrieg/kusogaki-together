@@ -138,6 +138,7 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 - **Breaking blocks by head on a joiner** was always denied: the host ran the brick's `onTouch` with its own copy of the joiner, which is late and not simulated (no `movingUp`, no `prevY`). A claim now carries the claimer's moment (`at`: position, previous y, velocity, moving up / falling / jumping / facing); the host checks it is near where it last heard the claimer was, then runs the entity's hook with the player as the claimer saw itself. Protocol 5.
 - **A joiner could push the host's player** (not the other way round): on the host the joiner is an immovable puppet, so when it walked into the host's player the host's player was moved out. Now, side by side with a puppet, nothing pushes and nothing is pushed: only a local player walking into it is stopped; the puppet's own machine stops the puppet (`core/physics/collision.lua`). Standing on heads is unchanged.
 - Regression checks in `tests/sim/net.lua`; both fail on v0.1.8 and pass now.
+- **A joiner walked through other players** (v0.1.10): side by side at the same height, the collision code picks the first-joined player as the "top" one, and a puppet on top is ignored (that rule is for standing on heads). On a joiner the host's player is first and a puppet, so the pair was skipped. A puppet now counts as on top only when it really is above; side by side the puppet rule applies. The earlier test only covered the other join order; the new one fails on v0.1.9.
 
 ## Next
 

@@ -70,7 +70,12 @@ function collision.resolveBodyCollision(a, b, restitution, bodies, statics)
     local dx, dy = b.x - a.x, b.y - a.y
     local player, platform = oneway.playerPair(a, b)
     if player and player.immovable then
-        return false -- a puppet on top stands where its owner says; nothing here moves
+        if not geometry.pushesHorizontally(a, b) then
+            return false -- a puppet on top stands where its owner says; nothing here moves
+        end
+        -- Side by side (playerPair picks a "top" one even at the same height):
+        -- the puppet rule below decides.
+        player, platform = nil, nil
     end
     if player and oneway.tryLanding(player, platform, bodies) then
         return true

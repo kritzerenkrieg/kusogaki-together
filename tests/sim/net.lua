@@ -285,6 +285,28 @@ do
     -- Smoothing: an owner walking 200 px/s, states every 50 ms arriving 30 ms
     -- late; shown 100 ms behind, blended between states.
     local smooth = require("core.net.smooth")
+    -- The same on a joiner: there the host's player (id 1, first in the
+    -- level) is the puppet, and both stand at exactly the same height.
+    level = Level.load("example", { seed = 1 })
+    local hostPuppet = level:addPlayer(playersync.makePuppet(playerModule.new(level.spawn.x + 40, level.spawn.y)))
+    local joiner = level:addPlayer(playerModule.new(level.spawn.x, level.spawn.y))
+    for _ = 1, 60 do
+        joiner.input = {}
+        level:update(1 / 60)
+    end
+    hostPuppet.y = joiner.y
+    for _ = 1, 90 do
+        joiner.input = { right = true }
+        level:update(1 / 60)
+    end
+    check("a joiner walking into the host's player stops at it (puppet first, same height)",
+        joiner.x < hostPuppet.x - (joiner.w + hostPuppet.w) / 2 + 2,
+        string.format("%.1f vs %.1f", joiner.x, hostPuppet.x))
+    hostPuppet.y = joiner.y - joiner.h -- standing on the joiner's head: still ignored here
+    local headY = hostPuppet.y
+    level:update(1 / 60)
+    check("a puppet on a local player's head moves nobody", hostPuppet.y == headY)
+
     local walker = playersync.makePuppet(playerModule.new(0, 0))
     local function stateAt(seq)
         local fields = { x = seq * 10, y = 0, vx = 200, vy = 0, facing = 1, onGround = true, jumping = false,
