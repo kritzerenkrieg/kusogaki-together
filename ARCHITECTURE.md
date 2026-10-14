@@ -12,7 +12,7 @@ For engine vision, the Lua sandbox and level packages, see `TECHNICAL.md`. For o
 main.lua              boots LÖVE, registers scenes
 scenes/
   gameplay.lua        loads a level and its local player, wires update/draw/keys; network play (--host/--join)
-  title_screen.lua
+  title_screen.lua    intro splash and the main menu (Cave Story style, with a running background parade)
 core/
   level/              a running level; require("core.level") is init.lua
     init.lua            Level.load(name), players, spawning, finish, messages, draw
