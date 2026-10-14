@@ -57,10 +57,13 @@ local gameplay = {}
 
 -- Command line: `--level <name>` picks the level (default "example"; a client
 -- plays the host's); `--host` / `--join <ip[:port]>` start network play;
--- `--local-coop` turns on the deprecated couch co-op.
+-- `--net-lag <ms> --net-loss <percent>` make this machine's connection worse
+-- for testing (core/net/session.lua); `--local-coop` turns on the deprecated
+-- couch co-op.
 local LEVEL_NAME = "example"
 local LOCAL_COOP = false
 local NET_MODE, JOIN_ADDRESS = nil, nil -- "host" | "client" | nil
+local NET_LAG, NET_LOSS = 0, 0          -- simulated extra round trip (s) and loss (fraction)
 for i, value in ipairs(arg or {}) do
     if value == "--level" and arg[i + 1] then
         LEVEL_NAME = arg[i + 1]
@@ -70,8 +73,13 @@ for i, value in ipairs(arg or {}) do
         NET_MODE = "host"
     elseif value == "--join" and arg[i + 1] then
         NET_MODE, JOIN_ADDRESS = "client", arg[i + 1]
+    elseif value == "--net-lag" and tonumber(arg[i + 1]) then
+        NET_LAG = tonumber(arg[i + 1]) / 1000
+    elseif value == "--net-loss" and tonumber(arg[i + 1]) then
+        NET_LOSS = tonumber(arg[i + 1]) / 100
     end
 end
+session.emulate(NET_LAG, NET_LOSS)
 
 local level                         -- nil on a client until the host's welcome
 local slots = {}                    -- local players in join order
@@ -445,7 +453,7 @@ local hostHandler = {
         local ok, victim, direction = false, nil, nil
         if message.g == generation and puppet and puppet.remote then
             level:protect(function()
-                ok, victim, direction = claims.judge(level, puppet, message)
+                ok, victim, direction = claims.judge(level, puppet, message, remoteSync[id] and remoteSync[id].last)
             end)
         end
         hostSends[#hostSends + 1] = { id = id, message = { t = "verdict", g = message.g, c = message.c,
@@ -469,8 +477,8 @@ local hostHandler = {
             local correction = playersync.correction(record, puppet)
             correction.g = generation
             hostSends[#hostSends + 1] = { id = id, message = correction }
-        elseif result == "ok" then
-            presentRemoteEvents(id, message.e, puppet)
+            playersync.hold(puppet) -- it waits where the correction puts its owner
+            puppet.x, puppet.y = correction.x, correction.y
         end
     end,
 }
@@ -513,7 +521,7 @@ local clientHandler = {
         local state = worldsync.receive(world, message)
         if state then
             worldsync.settle(pending, state.n, love.timer.getTime())
-            level:protect(worldsync.apply, level, state, pending)
+            level:protect(worldsync.apply, level, state, pending, world.clock, love.timer.getTime())
             votes = {}
             for _, id in ipairs(message.vt) do
                 votes[id] = true
@@ -585,8 +593,8 @@ local clientHandler = {
         for _, entry in ipairs(message.list) do
             local id = entry[1]
             local puppet = id ~= slots[1].id and playerWithId(id)
-            if puppet and puppet.remote and playersync.accept(remoteSync, entry, puppet) then
-                presentRemoteEvents(id, entry[4], puppet)
+            if puppet and puppet.remote then
+                playersync.accept(remoteSync, entry, puppet, love.timer.getTime())
             end
         end
     end,
@@ -744,22 +752,30 @@ function gameplay.update(delta)
             slot.player.input = slot.source.read(level.actions)
         end
         interp.record(movingBodies())
+        local now = love.timer.getTime()
         local seen = {} -- host: remote players before the step (did a script move one?)
         for _, player in ipairs(level.players) do
             if player.remote then
-                playersync.advance(player, step, level)
+                local names = playersync.advance(player, step, level, now)
+                if #names > 0 then
+                    presentRemoteEvents(player.id, names, player)
+                end
                 seen[player] = NET_MODE == "host" and playersync.watch(player) or nil
             end
         end
         local client = NET_MODE == "client"
         if client then
-            worldsync.advance(level, step)
+            worldsync.advance(level, step, world.clock, now)
         end
         local wasFinished = level.finished
         level:update(step, client and worldsync.CLIENT_STAGES or nil)
         tick = tick + 1
         for player, before in pairs(seen) do
-            pendingSet[player.id] = playersync.changes(pendingSet[player.id], before, player)
+            local changed = playersync.changes(pendingSet[player.id], before, player)
+            pendingSet[player.id] = changed
+            if changed and (changed.x or changed.y) then
+                playersync.hold(player) -- stays where the script put it until its owner follows
+            end
         end
         level:protect(handleClaims)
         local events = level:takeEvents()

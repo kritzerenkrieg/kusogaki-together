@@ -161,6 +161,59 @@ do
     first.client:close()
 end
 
+-- ── The bad network simulator ────────────────────────────────────────────
+do
+    local level = Level.load("example", { seed = 4 })
+    level:addPlayer(playerModule.new(100, 100))
+    local votes, states = {}, 0
+    local host = assert(session.host({
+        port = PORT + 2, bind = "127.0.0.1",
+        level = { name = "example", fingerprint = levelpack.fingerprint("levels/example") },
+        handler = {
+            accept = function() return 2 end,
+            welcome = function() return { seed = 4, generation = 1, players = { 1, 2 } } end,
+            left = function() end,
+            vote = function(_, on) votes[#votes + 1] = { on = on, at = love.timer.getTime() } end,
+            state = function() states = states + 1 end,
+        },
+    }))
+    local joined = false
+    local client = assert(session.join("127.0.0.1:" .. (PORT + 2), {
+        level = function() return true end,
+        welcome = function() joined = true end,
+        closed = function() end,
+    }))
+    pump({ host, client }, function() return joined end)
+    -- In one process both sides go through it: 150 ms each way, 5% each way.
+    session.emulate(0.15, 0.05)
+    love.math.setRandomSeed(12345) -- the simulator's losses repeat run to run
+    local sentAt = love.timer.getTime()
+    client:vote(true)
+    pump({ host, client }, function() return #votes == 1 end)
+    check("the simulator delays messages", votes[1] and votes[1].at - sentAt >= 0.14,
+        votes[1] and string.format("%.3f s", votes[1].at - sentAt))
+    for i = 1, 40 do
+        client:vote(i % 2 == 0)
+    end
+    local p = require("core.net.playersync").pack(playerModule.new(1, 1))
+    for i = 1, 55 do -- under the host's 60 a second
+        client:sendState({ t = "state", g = 1, s = i, a = 0, p = p, e = {}, k = 0 })
+    end
+    for _ = 1, 3 do -- reliable resends can take a few round trips
+        pump({ host, client }, function() return #votes == 41 end)
+    end
+    local inOrder = #votes == 41
+    for i = 2, #votes do
+        inOrder = inOrder and votes[i].on == ((i - 1) % 2 == 0)
+    end
+    check("reliable messages all arrive, in order", inOrder, #votes)
+    pump({ host, client }, function() return false end) -- let the late ones in (2 s)
+    check("unreliable ones are lost now and then", states >= 40 and states < 55, states)
+    session.emulate(0, 0)
+    client:close()
+    host:close()
+end
+
 -- ── Player state sync (core/net/playersync.lua) ──────────────────────────
 local playersync = require("core.net.playersync")
 do
@@ -229,12 +282,37 @@ do
     level:update(1 / 60)
     check("a puppet does not die here (its owner decides)", not still.dead)
 
+    -- Smoothing: an owner walking 200 px/s, states every 50 ms arriving 30 ms
+    -- late; shown 100 ms behind, blended between states.
+    local smooth = require("core.net.smooth")
     local walker = playersync.makePuppet(playerModule.new(0, 0))
-    playersync.apply(walker, { x = 10, y = 0, vx = 60, vy = 0, facing = 1, onGround = true, jumping = false,
-        dead = false, kickTime = 0, respawns = 0 })
-    for _ = 1, 30 do playersync.advance(walker, 1 / 60) end
-    check("a puppet keeps moving briefly between states, then waits", walker.x > 15 and walker.x < 17.5
+    local function stateAt(seq)
+        local fields = { x = seq * 10, y = 0, vx = 200, vy = 0, facing = 1, onGround = true, jumping = false,
+            dead = false, kickTime = 0, respawns = 0, carryingId = 0 }
+        playersync.hear(walker, fields, seq, seq == 2 and { "jump" } or {}, seq * 0.05 + 0.03)
+    end
+    for seq = 1, 5 do stateAt(seq) end
+    local names = playersync.advance(walker, 1 / 60, nil, 0.3)
+    check("a puppet is shown 100 ms behind, blended between states", math.abs(walker.x - 34) < 0.01
         and walker.state == "run", string.format("%.2f %s", walker.x, walker.state))
+    check("its sounds play when their state is shown, once", #names == 1 and names[1] == "jump"
+        and #playersync.advance(walker, 1 / 60, nil, 0.31) == 0)
+    playersync.advance(walker, 1 / 60, nil, 0.5)
+    check("past its newest state it moves on 100 ms, then waits", math.abs(walker.x - 70) < 0.01,
+        string.format("%.2f", walker.x))
+    stateAt(7) -- 6 was lost
+    playersync.advance(walker, 1 / 60, nil, 0.03 + 0.1 + 0.3)
+    check("a lost state is bridged", math.abs(walker.x - 60) < 0.01, string.format("%.2f", walker.x))
+    local track = smooth.track()
+    smooth.push(track, 0, { x = 0, y = 0 })
+    smooth.push(track, 0.05, { x = 500, y = 0 })
+    check("a teleport between states is not slid across", (smooth.sample(track, 0.04)) == 0)
+    local clock = smooth.clock()
+    smooth.heard(clock, 1, 1.2)
+    smooth.heard(clock, 2, 2.05)
+    smooth.heard(clock, 3, 3.3)
+    check("a sender's clock follows the quickest delivery, creeping up slowly",
+        clock.offset > 0.05 and clock.offset < 0.06, clock.offset)
 
     -- Owner override: newer authority only.
     local owned = playerModule.new(0, 0)
@@ -541,7 +619,13 @@ do
     for _, enemy in ipairs(gameplay.getLevel().enemies) do
         if enemy.typeName == "dodon" then target = enemy break end
     end
-    puppet.x, puppet.y = target.x, target.y - 20
+    -- Walk there in legal steps (authority 3, after the script's setPlayer).
+    local fromX = puppet.x
+    for i = 1, 6 do
+        sendAt(fromX + (target.x - fromX) * i / 6, 3)
+        run(3)
+    end
+    run(10)
     client:sendClaim({ t = "claim", g = got.welcome.generation, c = 1, k = "stomp", id = target.id })
     client:sendClaim({ t = "claim", g = got.welcome.generation, c = 2, k = "stomp", id = target.id })
     run(200, function() return #verdicts >= 2 end)

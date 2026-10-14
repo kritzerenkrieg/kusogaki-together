@@ -325,7 +325,8 @@ Rules (decided):
 
 ### Client presentation
 - **Own player:** drawn from local simulation, no delay.
-- **Remote players and world bodies** are drawn ~100 ms behind, interpolated between received updates, so the movement looks smooth despite the lower send rate and jitter.
+- **Remote players and world bodies** are drawn ~100 ms behind, interpolated between received updates, so the movement looks smooth despite the lower send rate and jitter. Built: `core/net/smooth.lua` (sender-time clocks, teleports not slid across, 0.1 s of moving on past the newest update); remote players on the host too.
+- **Testing a bad connection:** `--net-lag <ms> --net-loss <percent>` on any machine adds that round trip and loses that share of unreliable messages both ways (`session.emulate`).
 
 ### Open questions
 Tracked in `OPEN_DECISION.md`.

@@ -4,10 +4,8 @@
 -- overrides an owner with `setPlayer` and a higher authority number.
 --
 -- On every machine the other machines' players are puppets: not simulated
--- here (no controller, no rule changes them), solid but immovable, and placed
--- by the newest state received. Between states a puppet keeps moving at its
--- last velocity for a short while (dead reckoning); step 5 replaces that with
--- interpolation.
+-- here (no controller, no rule changes them), solid but immovable, and shown
+-- 100 ms behind their owner, blended between its states (core/net/smooth.lua).
 --
 -- Wire form of a player (`p`): a list of 9 integers
 --   { x, y, vx, vy, flags, kickTime, kickAnimationTime, respawns, carrying }
@@ -17,11 +15,11 @@
 -- displayed state (idle, run...) is derived from these on each machine.
 local state = require("core.player.state")
 local carry = require("core.player.carry")
+local smooth = require("core.net.smooth")
 
 local playersync = {}
 
 playersync.SEND_EVERY = 3        -- ticks between sends: 20 Hz (OPEN_DECISION D1)
-playersync.EXTRAPOLATE = 0.1     -- s a puppet keeps moving without a new state
 playersync.MAX_SPEED = 1500      -- px/s; faster is clearly impossible (referee)
 playersync.MAX_EVENTS = 8        -- player events (sounds) carried per message
 playersync.MAX_COORD = 2 ^ 24    -- 1/8 px: about +-2 million px
@@ -116,8 +114,16 @@ function playersync.makePuppet(player)
     player.remote = true    -- played on another machine; rules here leave it alone
     player.immovable = true -- solid, but bodies here never push it
     player.contacts = {}
-    player.syncAge = math.huge -- no state yet: stands still
+    player.track = smooth.track() -- its owner's states, shown with a delay
+    player.clock = smooth.clock() -- the owner's time -> ours
+    player.shownTime = -math.huge -- states up to here were shown (their sounds played)
     return player
+end
+
+-- Forget a puppet's states: it stays where it is (the host just moved it)
+-- until its owner's next states arrive.
+function playersync.hold(player)
+    player.track = smooth.track()
 end
 
 -- Let go of whatever the player carries, or whoever carries it.
@@ -133,33 +139,55 @@ local function releaseCarry(player)
     end
 end
 
--- Place a puppet at a received state.
-function playersync.apply(player, fields)
-    if fields.dead and not player.dead then
-        releaseCarry(player)
-    end
-    for key, value in pairs(fields) do
-        player[key] = value
-    end
-    player.kickAnimationTime = fields.kickAnimationTime -- nil clears it
-    player.prevY = player.y
-    player.syncAge = 0
+local SKIP_FIELDS = { time = true, events = true, x = true, y = true }
+
+-- A state of the puppet's owner arrived at `now` (our seconds): sequence
+-- `seq`, fields (playersync.unpack) and event names. It is shown later.
+function playersync.hear(player, fields, seq, events, now)
+    local time = seq * playersync.SEND_EVERY / TICK
+    smooth.heard(player.clock, time, now)
+    fields.events = events
+    smooth.push(player.track, time, fields)
 end
 
--- One tick of a puppet: keep moving at its last velocity for a short while,
--- run its timers, pick the displayed state and animation clocks, and hold
--- what it carries in its hands. On a network client (`level.remoteWorld`)
--- what it carries comes from its owner's state; on the host from its claims.
-function playersync.advance(player, delta, level)
-    player.prevY = player.y
-    player.syncAge = player.syncAge + delta
-    if player.syncAge <= playersync.EXTRAPOLATE then
-        player.x = player.x + player.vx * delta
-        player.y = player.y + player.vy * delta
+-- Put a puppet at the state in force at sender time `time`, at (x, y).
+local function place(player, sample, x, y, time)
+    if sample.dead and not player.dead then
+        releaseCarry(player)
     end
-    player.kickTime = math.max(0, player.kickTime - delta)
-    if player.kickAnimationTime then
-        player.kickAnimationTime = player.kickAnimationTime + delta
+    for key, value in pairs(sample) do
+        if not SKIP_FIELDS[key] then
+            player[key] = value
+        end
+    end
+    local since = math.max(0, time - sample.time)
+    player.x, player.y = x, y
+    player.kickTime = math.max(0, sample.kickTime - since)
+    player.kickAnimationTime = sample.kickAnimationTime and sample.kickAnimationTime + since or nil
+end
+
+-- One tick of a puppet at our time `now`: shown DELAY behind its owner,
+-- blended between states; its displayed state and animation clocks; what it
+-- carries in its hands. On a network client (`level.remoteWorld`) what it
+-- carries comes from its owner's state; on the host from its claims.
+-- Returns the event names of the states shown this tick (their sounds).
+function playersync.advance(player, delta, level, now)
+    player.prevY = player.y
+    local names = {}
+    local track = player.track
+    if track and #track.samples > 0 then
+        local time = smooth.showTime(player.clock, now)
+        local x, y, sample = smooth.sample(track, time)
+        for _, passed in ipairs(track.samples) do
+            if passed.time > player.shownTime and passed.time <= time then
+                for _, name in ipairs(passed.events or {}) do
+                    names[#names + 1] = name
+                end
+            end
+        end
+        player.shownTime = math.max(player.shownTime, time)
+        place(player, sample, x, y, time)
+        smooth.forget(track, time)
     end
     state.animate(player, delta)
     if level and level.remoteWorld then
@@ -172,6 +200,7 @@ function playersync.advance(player, delta, level)
     if player.carrying then
         carry.attach(player)
     end
+    return names
 end
 
 -- ── Owner (this machine's own player) ────────────────────────────────────
@@ -265,7 +294,7 @@ function playersync.receive(record, message, puppet, level, now)
     if not playersync.possible(level, puppet, record.last, fields, seconds) then
         return "refused"
     end
-    playersync.apply(puppet, fields)
+    playersync.hear(puppet, fields, message.s, message.e, now)
     record.last, record.lastTime = fields, now
     local events = record.forward and record.forward.e or {}
     for _, name in ipairs(message.e) do
@@ -331,16 +360,16 @@ end
 
 -- ── Clients: the host's forwarded states ─────────────────────────────────
 
--- Apply one forwarded entry { id, s, p, e } to `puppet` if it is newer than
+-- Take one forwarded entry { id, s, p, e } for `puppet` if it is newer than
 -- the last one for that player (`seen`: id -> sequence). Returns true when
--- applied.
-function playersync.accept(seen, entry, puppet)
+-- taken.
+function playersync.accept(seen, entry, puppet, now)
     local id, seq = entry[1], entry[2]
     if seq <= (seen[id] or 0) then
         return false
     end
     seen[id] = seq
-    playersync.apply(puppet, playersync.unpack(entry[3]))
+    playersync.hear(puppet, playersync.unpack(entry[3]), seq, entry[4], now)
     return true
 end
 

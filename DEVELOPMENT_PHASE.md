@@ -2,7 +2,7 @@
 
 Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Undecided choices are tracked in `OPEN_DECISION.md`. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
 
-Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 steps 1–4, sessions, player state, the host's world and claims over ENet, done).
+Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 steps 1–5 done: sessions, player state, the host's world, claims, smoothing and the bad network simulator; the step 6 bar is met in headless runs and waits for a play test by hand).
 
 ---
 
@@ -124,6 +124,16 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 - **Not yet:** checkpoints are noticed by the host (the client gets its respawn point by `setPlayer` a round trip later) rather than claimed by the owner. A kicked or thrown prop on a client moves for 0.1 s, then waits for the host's snapshot (interpolation is step 5). Carrying players online.
 - Checks: `tests/sim/net.lua` (a client's stomp shown and claimed, host judging with the entity's hook, repeated, far and wrong claims denied, a pending entity keeping the client's version, a denied claim undone by the snapshot, kicking a remote player, explosions, and the scene answering a real client's claims). By hand: two headless game processes; the client kicked a prop and broke a block with its head, both claims were accepted, and both sides ended with the same 71 entities and no hash mismatch in 143 deltas.
 
+### Phase 2 step 5: smoothing and the bad network simulator (done)
+- `core/net/smooth.lua`: other machines' players (on every machine, the host included) and the host's world bodies (on clients) are shown 100 ms behind their sender, blended between its updates; past the newest one a body keeps its velocity for 0.1 s. Times are the sender's (sequence or snapshot number × 50 ms), mapped to ours by a clock per sender that follows the quickest delivery and creeps up when the delay grows. A jump of more than 64 px between two updates is a teleport and is not slid across. A remote player's sounds play when its state is shown, once.
+- Host side: a claim is judged from the claimer's newest state, not its delayed picture; a puppet the host moves (a script, a referee correction) stays put until its owner's new states arrive (`playersync.hold`).
+- `--net-lag <ms> --net-loss <percent>` (`session.emulate`): this machine's connection gets that much extra round trip (half each way) and loses that share of unreliable messages both ways; reliable ones are never lost but are sometimes a round trip late, still in order. The host's per-client limit (60 states a second) still applies.
+- Timeouts and leaving were already handled in step 1 (5 s silence drops a peer; a leaving player is removed for everyone; the host leaving ends the session).
+- Game 0.1.8 (protocol unchanged, 4).
+- Checks: `tests/sim/net.lua` (smoothing: delay and blending, sounds once, moving on past the newest state, a lost state bridged, teleports, sender clocks; the simulator: delay, reliable all in order, unreliable lost). By hand, headless processes: (a) host + client with real frame times: the host player moves at most 3–4 px per frame on the client, jerks only where it starts and stops; (b) the client at `--net-lag 150 --net-loss 5`: same smoothness, final positions equal on both sides, one claim fairly denied; (c) **5 instances** (host + 4 clients, two of them at 150 ms / 5%): every client ended with the same 67 entities, 11 enemies, enemy positions and 5 players; no errors.
+- **Step 6 status:** the bar ("5 instances play cleanly, playable at 150 ms / 5% loss, never desync or break the session") is met in these headless runs. It still needs people playing in real windows on one PC and on a LAN before Phase 2 is called done.
+- **Left in Phase 2:** carrying players online; checkpoints as the owner's claim (now host-noticed).
+
 ## Next
 
 **Phase 2: LAN netcode over direct IP** (`NETWORKING.md`, Netcode). Model: each machine owns its own player's movement; the host owns the world and the session. Every machine has exactly one local player. Phase 2 is tested on one PC and a LAN; internet play without port forwarding is Phase 3.
@@ -139,10 +149,10 @@ Then, in rough order:
 2. ~~Owner → host player state (newest wins, sequence + authority + generation numbers); host forwards it and runs referee checks; `setPlayer` overrides.~~ Done (above).
 3. ~~Host → clients world snapshots and deltas, periodic full snapshots and a world hash so clients detect drift. Clients stop running world rules and level scripts' update; host scripts moving a remote player then send `setPlayer` (OPEN_DECISION A4); restart votes are shown to everyone.~~ Done (above); the hash replaces periodic full snapshots.
 4. ~~Optimistic claims and their rules (stomps, kicks, deaths, props, checkpoints, `impulse`)~~ Done (above; checkpoints are host-noticed for now). Then carrying players (`NETWORKING.md`, Interactions between owners).
-5. Interpolation (~100 ms) of remote players and world bodies; timeouts and clean leave handling.
-6. Done when 5 instances play cleanly on one PC/LAN, stay playable at 150 ms and 5% emulated loss, and never desync or break the session.
+5. ~~Interpolation (~100 ms) of remote players and world bodies; timeouts and clean leave handling.~~ Done (above), with the `--net-lag <ms> --net-loss <%>` simulator.
+6. Done when 5 instances play cleanly on one PC/LAN, stay playable at 150 ms and 5% emulated loss, and never desync or break the session. Met in headless runs (step 5 above); **next: a play test by hand** (see How to test online), then carrying players and checkpoint claims.
 
-Testing: a built-in `--net-lag <ms> --net-loss <%>` emulator for the 150 ms / 5% loss check.
+How to test online on one PC: `love2d . --host` in one terminal, then `love2d . --join 127.0.0.1` in others (up to 4); add `--net-lag 150 --net-loss 5` to any of them for a bad connection. On a LAN, join the host's IP (UDP port 26967).
 
 ### Roadmap after that (from `NETWORKING.md`)
 | Phase | Scope |

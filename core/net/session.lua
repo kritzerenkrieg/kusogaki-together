@@ -28,9 +28,88 @@ local function setTimeout(peer)
     peer:timeout(32, TIMEOUT_MS, TIMEOUT_MS)
 end
 
+-- ── Bad network simulator (`--net-lag <ms> --net-loss <%>`) ─────────────
+-- Adds `lag` seconds of round trip to this machine's connection (half on
+-- the way out, half on the way in) and loses `loss` of its unreliable
+-- messages both ways; a reliable message is never lost, but with chance
+-- `loss` it is late by another round trip (ENet resending it), still in order.
+local emulation = { lag = 0, loss = 0 }
+local outbox = {} -- { peer, data, channel, flag, due }, in due order per peer
+local lastDue = setmetatable({}, { __mode = "k" }) -- peer -> due of its last reliable message
+
+function session.emulate(lagSeconds, lossFraction)
+    emulation.lag = math.max(0, lagSeconds or 0)
+    emulation.loss = math.min(math.max(lossFraction or 0, 0), 1)
+end
+
+local function emulating()
+    return emulation.lag > 0 or emulation.loss > 0
+end
+
+local function lost()
+    return emulation.loss > 0 and love.math.random() < emulation.loss
+end
+
+local function rawSend(peer, data, channel, flag)
+    pcall(peer.send, peer, data, channel, flag) -- a peer gone meanwhile is fine
+end
+
+-- Send what is due (all of it when `all`).
+local function flushOutbox(all)
+    local waiting = {}
+    for _, entry in ipairs(outbox) do
+        if all or entry.due <= now() then
+            rawSend(entry.peer, entry.data, entry.channel, entry.flag)
+        else
+            waiting[#waiting + 1] = entry
+        end
+    end
+    outbox = waiting
+end
+
 local function send(peer, message, channel)
     local flag = channel == protocol.STATE and "unsequenced" or "reliable"
-    peer:send(protocol.encode(message), channel, flag)
+    local data = protocol.encode(message)
+    if not emulating() then
+        peer:send(data, channel, flag)
+        return
+    end
+    local due = now() + emulation.lag / 2
+    if flag == "unsequenced" then
+        if lost() then
+            return
+        end
+    else
+        if lost() then
+            due = due + math.max(emulation.lag, 0.05) -- resent after a round trip
+        end
+        due = math.max(due, lastDue[peer] or 0) -- reliable stays in order
+        lastDue[peer] = due
+    end
+    outbox[#outbox + 1] = { peer = peer, data = data, channel = channel, flag = flag, due = due }
+end
+
+-- The next ENet event for `self` (a Host or Client), through the simulator.
+local function nextEvent(self)
+    if not emulating() and #self.inbox == 0 then
+        local ok, event = pcall(self.enet.service, self.enet, 0)
+        return ok and event or nil
+    end
+    while true do
+        local ok, event = pcall(self.enet.service, self.enet, 0)
+        if not ok or not event then
+            break
+        end
+        if not (event.type == "receive" and event.channel == protocol.STATE and lost()) then
+            self.inbox[#self.inbox + 1] = { event = event, due = now() + emulation.lag / 2 }
+        end
+    end
+    local first = self.inbox[1]
+    if first and first.due <= now() then
+        table.remove(self.inbox, 1)
+        return first.event
+    end
+    return nil
 end
 
 -- ── Host ──────────────────────────────────────────────────────────────────
@@ -62,6 +141,7 @@ function session.host(options)
         game = version.GAME, -- versions this host plays (fixed when it opens)
         protocol = version.PROTOCOL,
         peers = {}, -- peer index -> { peer, stage = "hello" | "ready" | "joined", id, since, states }
+        inbox = {}, -- events held back by the bad network simulator
     }, Host)
 end
 
@@ -144,9 +224,10 @@ local function hostDisconnected(self, index)
 end
 
 function Host:service()
+    flushOutbox()
     while self.enet do
-        local ok, event = pcall(self.enet.service, self.enet, 0)
-        if not ok or not event then
+        local event = nextEvent(self)
+        if not event then
             break
         end
         local index = event.peer:index()
@@ -223,6 +304,7 @@ function Host:close()
             entry.peer:disconnect_later()
         end
     end
+    flushOutbox(true)
     self.enet:flush()
     self.enet:destroy()
     self.enet = nil
@@ -266,6 +348,7 @@ function session.join(address, handler)
         peer = peer,
         handler = handler,
         stage = "connecting", -- "connecting" | "hello" | "ready" | "joined" | "closed"
+        inbox = {},
         since = now(),
         reason = nil,
     }, Client)
@@ -327,9 +410,10 @@ local function clientReceive(self, data)
 end
 
 function Client:service()
+    flushOutbox()
     while self.enet and self.stage ~= "closed" do
-        local ok, event = pcall(self.enet.service, self.enet, 0)
-        if not ok or not event then
+        local event = nextEvent(self)
+        if not event then
             break
         end
         if event.type == "connect" then
@@ -373,6 +457,7 @@ function Client:close()
     if not self.enet then
         return
     end
+    flushOutbox(true)
     if self.stage ~= "closed" then
         self.stage = "closed"
         self.peer:disconnect_now()

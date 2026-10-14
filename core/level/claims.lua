@@ -114,24 +114,26 @@ local function direction(claim)
 end
 
 -- The host judges a claim by `player` (a puppet, or its own player for
--- kickPlayer). Runs the same entity hooks the rules would. Returns true when
--- it holds (the world is changed; the next steps show it), plus for
--- kickPlayer the victim and the knock direction.
-function claims.judge(level, player, claim)
+-- kickPlayer), as if it stood at `at` (its newest state; default: where it is
+-- shown). Runs the same entity hooks the rules would. Returns true when it
+-- holds (the world is changed; the next steps show it), plus for kickPlayer
+-- the victim and the knock direction.
+function claims.judge(level, player, claim, at)
+    at = at or player
     if player.dead then
         return false
     end
     if claim.k == "kickPlayer" then
         for _, victim in ipairs(level.players) do
             if victim.id == claim.id and victim ~= player and not victim.dead and not victim.held
-                and near(player, victim) then
+                and near(at, victim) then
                 return true, victim, direction(claim)
             end
         end
         return false
     end
     local entity = level:get(claim.id)
-    if not entity or not near(player, entity) then
+    if not entity or not near(at, entity) then
         return false
     end
     local k = claim.k

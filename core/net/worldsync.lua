@@ -9,8 +9,8 @@
 -- engine finds what scripts changed by comparing snapshots.
 --
 -- A client runs only its own player's stages (CLIENT_STAGES) against the
--- world it was sent, and draws. Between snapshots moving bodies keep their
--- last velocity for a short while (dead reckoning; step 5 interpolates).
+-- world it was sent, and draws. Bodies are shown 100 ms behind the host,
+-- blended between snapshots (core/net/smooth.lua).
 --
 -- world message: { g, n, base, ents, gone, lvl, pl, vt, cd, hash }
 --   n     snapshot number;  base  the acknowledged one it is a delta to (0: full)
@@ -23,12 +23,14 @@
 local wire = require("core.wire")
 local netstate = require("core.level.netstate")
 local loader = require("core.level.loader")
+local smooth = require("core.net.smooth")
 
 local worldsync = {}
 
 worldsync.HISTORY = 32       -- snapshots remembered (1.6 s at 20 Hz)
 worldsync.FULL_EVERY = 1     -- s between full snapshots to a client that has no usable base
-worldsync.EXTRAPOLATE = 0.1  -- s a body keeps moving without a new snapshot
+worldsync.EXTRAPOLATE = 0.1  -- s a body this machine moved (a claim) keeps moving
+worldsync.INTERVAL = 3 / 60  -- s of host time between snapshots
 
 -- What a client's own step runs: its player against the world it was sent.
 -- Deaths by hazards, enemies and falling out are decided by the victim's
@@ -186,7 +188,7 @@ end
 -- ── Client ────────────────────────────────────────────────────────────────
 
 function worldsync.client()
-    return { history = {}, newest = 0, needFull = false }
+    return { history = {}, newest = 0, needFull = false, clock = smooth.clock() }
 end
 
 -- The snapshot number to acknowledge in the next state message.
@@ -320,9 +322,15 @@ end
 -- (creating a spawned entity runs its type's script). Entities with a claim
 -- in flight (`pending`) and bodies a player carries keep this machine's
 -- version. Entities taken out go to `level.graveyard` (id -> entity), so a
--- late event can still show them.
-function worldsync.apply(level, state, pending)
+-- late event can still show them. With `clock` (a client's) and our time
+-- `now`, positions go to each body's smoothing track (worldsync.advance shows
+-- them); without, they are set at once.
+function worldsync.apply(level, state, pending, clock, now)
     pending = pending or {}
+    local time = state.n * worldsync.INTERVAL
+    if clock then
+        smooth.heard(clock, time, now)
+    end
     level.graveyard = level.graveyard or {}
     local carried = {}
     for _, player in ipairs(level.players) do
@@ -339,7 +347,9 @@ function worldsync.apply(level, state, pending)
             restore(level, entity)
         end
         if pending[id] or (entity and carried[entity]) then
-            entity = nil -- this machine's version stands for now
+            if entity then
+                entity.track = nil -- this machine's version stands for now; smoothing restarts after
+            end
             goto continue
         end
         local spawnedType = entity and entity.spawned and entity.typeName or nil
@@ -351,6 +361,7 @@ function worldsync.apply(level, state, pending)
             entity = create(level, record.spawnedType, id, record.x, record.y, record.spawnDef)
         end
         if entity and finite(record.x) and finite(record.y) then
+            local shownX, shownY = entity.x, entity.y
             for _, field in ipairs(netstate.ENTITY_FIELDS) do
                 if not SKIP[field] then
                     entity[field] = record[field]
@@ -363,6 +374,14 @@ function worldsync.apply(level, state, pending)
             entity.facing = entity.facing or 1
             entity.killedBy, entity.detonated = nil, nil -- the host decides who is dead
             entity.syncAge = 0
+            if clock then
+                local fresh = entity.track == nil
+                entity.track = entity.track or smooth.track()
+                smooth.push(entity.track, time, { x = entity.x, y = entity.y, vx = entity.vx, vy = entity.vy })
+                if not fresh then
+                    entity.x, entity.y = shownX, shownY -- moved by worldsync.advance
+                end
+            end
             if entity.kind == "prop" then
                 entity.immovable = true -- the host moves props; this machine claims kicks
             end
@@ -404,15 +423,28 @@ function worldsync.apply(level, state, pending)
     end
 end
 
--- One client tick of the world: moving bodies keep their last velocity for a
--- short while after each snapshot.
-function worldsync.advance(level, delta)
-    for _, list in ipairs({ level.enemies, level.props }) do
+-- One client tick of the world at our time `now`: bodies shown 100 ms behind
+-- the host, blended between snapshots. A body this machine moved itself (a
+-- kicked prop, while its claim is pending) keeps its velocity for a short
+-- while instead.
+function worldsync.advance(level, delta, clock, now)
+    local time = clock and smooth.showTime(clock, now)
+    for _, list in ipairs({ level.enemies, level.props, level.blocks, level.hazards }) do
         for _, body in ipairs(list) do
-            body.syncAge = (body.syncAge or 0) + delta
-            if body.syncAge <= worldsync.EXTRAPOLATE and not body.held then
-                body.x = body.x + (body.vx or 0) * delta
-                body.y = body.y + (body.vy or 0) * delta
+            if body.held then
+                body.track = nil
+            elseif body.track and time then
+                local x, y, sample = smooth.sample(body.track, time)
+                if x then
+                    body.x, body.y, body.vx, body.vy = x, y, sample.vx, sample.vy
+                    smooth.forget(body.track, time)
+                end
+            elseif list == level.enemies or list == level.props then
+                body.syncAge = (body.syncAge or 0) + delta
+                if body.syncAge <= worldsync.EXTRAPOLATE then
+                    body.x = body.x + (body.vx or 0) * delta
+                    body.y = body.y + (body.vy or 0) * delta
+                end
             end
         end
     end

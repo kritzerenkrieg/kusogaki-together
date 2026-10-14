@@ -60,6 +60,7 @@ core/
     session.lua         ENet host and client: join handshake, refusals, session messages
     playersync.lua      player state: wire form, puppets, owner sends, host referee, setPlayer
     worldsync.lua       the host's world: snapshots, acked deltas, hash, client apply, events
+    smooth.lua          showing remote bodies 100 ms behind, blended between updates
   version.lua         game and protocol versions (must match to play together)
   fixedstep.lua       fixed-timestep clock (60 Hz ticks)
   script.lua          the script sandbox: environment, read-only engine views, limits
@@ -163,7 +164,7 @@ The scene runs `Level:update` in fixed 1/60 s ticks through `core/fixedstep.lua`
 
 **Network clients:** a client's level has `remoteWorld` set; the scene runs `level:update(delta, worldsync.CLIENT_STAGES)`, only its own player's stages (input, players, collisions, hazards, breakBlocks, enemyTouch, bounds, claims, playerAnimation), and applies the host's snapshots between ticks (`core/net/worldsync.lua`). What its player does to the world (stomps, kicks, breaking blocks, carrying) is noted as a claim (`core/level/claims.lua`) and shown at once by the `claims` stage; the host judges it. Props are immovable there (the host moves them).
 
-**Puppets (network play):** another machine's player is a puppet here (`player.remote`, `core/net/playersync.lua`): the `players` and `playerAnimation` stages skip it, and so do the rules that change a player (`hazards`, `breakBlocks`, `enemyTouch`, `detonations`, `enemyDeaths`, `bounds`; they get `stages.simulated(level)`), because its owner's machine runs those. Rules that only read players (`enemies` waking, `triggers`) see everyone. A puppet is solid but `immovable` (infinite mass, never settled against statics): a local player walking into it stops; one standing on a local player is ignored by that pair. Grabs skip puppets (carrying players online comes later); kicking one is a claim its own machine applies. The scene places puppets from received states and moves them on at their last velocity for up to 0.1 s between states (`playersync.advance`).
+**Puppets (network play):** another machine's player is a puppet here (`player.remote`, `core/net/playersync.lua`): the `players` and `playerAnimation` stages skip it, and so do the rules that change a player (`hazards`, `breakBlocks`, `enemyTouch`, `detonations`, `enemyDeaths`, `bounds`; they get `stages.simulated(level)`), because its owner's machine runs those. Rules that only read players (`enemies` waking, `triggers`) see everyone. A puppet is solid but `immovable` (infinite mass, never settled against statics): a local player walking into it stops; one standing on a local player is ignored by that pair. Grabs skip puppets (carrying players online comes later); kicking one is a claim its own machine applies. The scene shows puppets 100 ms behind their owner, blended between its states (`playersync.advance`, `core/net/smooth.lua`).
 
 A step runs the level's `stages` in order (`core/level/stages.lua`; a copy of the list, so a stage may change it). Each level gets fresh stage entries, and scripts may add, remove, replace or reorder them (`level:addStage`, `removeStage`, `replaceStage`, `findStage`). Finishing the level (`level:finish`) ends the step after the current stage. The built-in stages:
 
