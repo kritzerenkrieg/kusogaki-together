@@ -17,38 +17,50 @@ Sessions hold up to **5 players** (1 host + 4 clients).
                HTTPS/UDP  │                  │  HTTPS/UDP
                    ┌──────┴──────┐  ENet  ┌──┴──────────┐
                    │    Host     │◄──────►│  Client x4  │
-                   │ full sim    │  UDP   │ inputs out  │
-                   │ 60 Hz       │        │ snapshots in│
+                   │ world sim   │  UDP   │ own player  │
+                   │ + own player│        │ state out,  │
+                   │ 60 Hz       │        │ world in    │
                    └─────────────┘        └─────────────┘
 ```
 
 - **The backend** handles accounts, level packages, room listing, NAT traversal and relay. It never simulates gameplay.
-- **The host** is the player who opened the room. It runs physics, rules, AI and all gameplay Lua at a fixed 60 Hz, and is the only authority on game state.
-- **Clients** send inputs, predict their own player's movement, and draw everyone else from the host's snapshots.
+- **The host** is the player who opened the room. It runs the world at a fixed 60 Hz (enemies, blocks, props, level and entity scripts, outcomes) and owns the session. It is also the referee and relay for player movement.
+- **Every machine (host included) owns its own player's movement.** It simulates that player locally with no input delay and sends the result (position, velocity, pose) to the host, which forwards it to everyone else.
 
 ### What gets synced
 
-Nothing is synced by copying memory. Clients never receive Lua tables, closures or script state. The host sends only:
-- **Snapshots:** a fixed, declared *net state* per body (position, velocity, a few flags).
-- **Events:** one-off happenings (explosion here, this block broke, play this sound).
+Nothing is synced by copying memory. Clients never receive Lua tables, closures or script state. What travels:
+- **Player state, from each owner:** its player's declared net fields (position, velocity, pose, a few flags), ~20–30 times a second, unreliable. The host forwards them to the other machines.
+- **World snapshots, from the host:** the declared *net state* of every entity and the level (enemies, blocks, props, `level.net`).
+- **Events, from the host:** one-off happenings (explosion here, this block broke, an enemy died, play this sound), reliable and in order.
+- **Claims, from owners:** what a player did to something it does not own ("I stomped enemy 12", "my kick hit player 3"). The host checks each claim and answers with events.
 
-Gameplay Lua runs only on the host, so hidden script state (locals, upvalues) never needs syncing. Anything a client must see has to be a declared net field.
+World Lua (entity and level scripts) runs only on the host, so its hidden state (locals, upvalues) never needs syncing. Anything a client must see has to be a declared net field.
 
-Lockstep and rollback (every peer runs the same simulation) are rejected. LuaJIT floats, `math.sin`/`math.atan2` and order-dependent pair resolution (`core/physics/collision.lua`) are not guaranteed bit-identical across machines, so peers would drift.
+Lockstep and rollback (every peer runs the same simulation) are rejected. LuaJIT floats, `math.sin`/`math.atan2` and order-dependent pair resolution (`core/physics/collision.lua`) are not guaranteed bit-identical across machines, so peers would drift. Owner-driven movement avoids the problem for players: nobody re-simulates someone else's player, they just draw the owner's numbers.
 
+### Source of truth
 
-### Source of truth: the lobby host
+**The main goal: no desync and no broken session.** We cannot trust sync to work perfectly: packets get lost, reordered and delayed, and two machines can drift even from the same inputs. So every piece of state has exactly one owner, every message can be lost or late without lasting harm, and every machine converges on the owners' numbers.
 
-**We cannot trust sync to work perfectly.** Packets get lost, reordered and delayed; client prediction guesses; floats and script code can make two machines drift even from the same inputs. So the design never assumes a client's copy is right. It keeps one source of truth, the lobby host, and makes every client converge on it.
+| State | Owner (the truth) | How it travels |
+|---|---|---|
+| a player's position, velocity, pose | **that player's machine** | unreliable, newest wins |
+| enemies, blocks, props, items, scripts, score, win/lose | **host** | world snapshots, unreliable, newest wins |
+| one-off happenings (block broke, enemy died) | **host** | events, reliable, in order |
+| who is in the session, level, seed, restarts, votes | **host** | reliable |
 
-- **One owner per decision.** The host alone decides game state and every outcome: physics, deaths, stomps, grabs, block breaks, checkpoints, spawns, script state, wins/losses, restart votes and the seed of each (re)start. A client never decides any of these, not even about its own player.
-- **Clients only ask.** A client sends inputs, restart votes and chat. It never sends positions, hits, scores or other state, and the host would ignore them.
-- **The host's word overwrites.** Every snapshot replaces what a client holds: prediction is rewound and replayed on top of it, and remote bodies are drawn from it. A client never "merges" its own guess back in.
-- **Drift heals itself.** Deltas are against a snapshot the client acknowledged, and the host sends a full snapshot on join, on restart, when a client falls too far behind, and periodically. Anything a client got wrong is corrected by the next one instead of piling up.
-- **Detect, don't hope.** Snapshots carry a tick number and a cheap state hash; a client whose rebuilt state does not match asks for a full snapshot (and logs it in debug builds).
-- **Everything from the wire is untrusted input.** The host validates every client message (input bits, vote toggles, rates); clients validate the host's too (`core/wire.lua` is safe for untrusted bytes; `gameplay.restart(seed)` refuses a bad seed).
-- **Same path for host and clients.** The host restarts through the same `gameplay.restart(seed)` a client calls on `restart{seed}`, so the two cannot diverge in how a level is rebuilt.
+- **One owner per piece of state.** Nobody else writes it. A machine that wants to change something it does not own sends a claim; the owner (for the world: the host) decides.
+- **Absolute state, newest wins.** Player state and snapshots carry the full value, not a change, plus a sequence number. A lost update is simply replaced by the next one; an update older than the newest one received is dropped. Missed data catches up by itself, so plain movement cannot stay out of sync.
+- **The host can override a player.** When the host must move someone (respawn, restart, a script teleport, being carried) it sends a reliable `setPlayer` with an **authority number** that goes up each time. The owner applies it and stamps its next updates with that number; the host ignores player updates stamped with an older one. This is the host's "ACK": in normal play it just takes the newest position; it only answers when it overrides. It stops the classic bug where a player snaps back to where they were before a respawn.
+- **Host scripts moving a player (decided).** After each step the host checks whether a script changed a player's position or velocity; if so it sends that player's machine a `setPlayer` automatically, at most at the send rate. This is for one-off moves (teleport, launch, respawn). Continuous effects (wind, conveyors, gravity zones) are written as synced level state that each owner's controller applies to its own player, so they stay smooth (`MODDING.md`, Online play).
+- **Level generation.** Every level (re)start gets a generation number (with `restart{seed}`). Every message carries it; anything from an older generation is dropped, so nothing from a previous run leaks into the new one.
+- **The host is the referee.** It overrides only the clearly impossible (far past the fastest legal speed, inside solid walls, a dead player moving) and answers those with a `setPlayer` rather than accepting them; anything merely odd is accepted. It checks claims the same way (is that enemy alive, was the player close enough).
+- **Detect, don't hope.** World snapshots carry the host tick and a cheap hash of the world state; a client whose world does not match asks for a full snapshot. The host also sends a full snapshot on join, on restart, after a long gap and periodically.
+- **Everything from the wire is untrusted input.** The host validates every client message (rates, sizes, ranges, authority and generation numbers); clients validate the host's too (`core/wire.lua` is safe for untrusted bytes; `gameplay.restart(seed)` refuses a bad seed).
+- **Same path for host and clients.** The host restarts through the same `gameplay.restart(seed)` a client calls on `restart{seed}`, and the host's own player goes through the same owner path as everyone else's.
 - **Presentation may differ; state may not.** Effects, debris, shake and sounds are local and may look different on each machine. Nothing that affects play may come from them.
+- **Cost of owner-driven movement:** a modified game could fly or teleport its own player. Co-op with friends accepts that; the referee checks reject the obviously impossible.
 
 ---
 
@@ -77,7 +89,7 @@ These must land before any networking code. Each is useful on its own, and toget
 
 ### Input frames (done)
 - Frames are `{ left, right, jump, kick, hold }` plus the level's custom actions (`level.json` `"actions"`, at most 16), held state only. Controllers read `player.input` and nothing else.
-- `core/input.lua` makes frames from keyboard layouts and gamepads. On the wire a frame is a tick number plus a bit mask in `level.actionNames` order (`input.pack` / `input.unpack`); both sides know the names from the package.
+- `core/input.lua` makes frames from keyboard layouts and gamepads. On the wire a frame is a tick number plus a bit mask in `level.actionNames` order (`input.pack` / `input.unpack`); both sides know the names from the package. With owner-driven movement (Netcode) frames stay on the owner's machine and are not sent.
 - Edges (`player.pressed`, `player.released`, and the platformer's `prevKeys`) are computed by the simulation from consecutive frames, so a frame never carries "pressed" events.
 
 ### Stable IDs (done)
@@ -216,7 +228,7 @@ Uploads may use common media types. The server normalizes them so every client g
 - `POST /rooms` creates a room. It holds:
   - level id + version + sha256;
   - max players (2–5);
-  - public or private (private rooms get a 6-character join code);
+  - public or private (private rooms get a numeric join code, digits only);
   - a display name.
 - `GET /rooms` lists public rooms that aren't full, with level title, players and region/ping hint.
 - `POST /rooms/{id}/join` (or `/rooms/join/{code}`) returns a session token plus what's needed for connectivity (below).
@@ -229,9 +241,7 @@ Uploads may use common media types. The server normalizes them so every client g
 
 ### HTTPS
 - LÖVE 11.5 ships `socket` (luasocket) but no TLS module: `ssl` and `https` are not available.
-- **Options:**
-  - Bundle the native `lua-https` module (from the LÖVE project) per platform.
-  - Move to LÖVE 12, which includes it.
+- **Decided: move to LÖVE 12**, which includes HTTPS. (Bundling `lua-https` for 11.5 is rejected.) The move is the first step of Phase 2; the LÖVE 11.5 limits written elsewhere (image formats, `enet`, `love.data`) are re-checked then.
 - Plain HTTP is allowed only against a localhost dev server.
 - Backend calls run off the main loop, in a `love.thread`, so the game never stalls on the network.
 
@@ -246,54 +256,93 @@ Uploads may use common media types. The server normalizes them so every client g
 2. **Relay fallback:**
    - If no direct connection is made, both connect to the backend UDP relay, which forwards datagrams by session token.
    - Relay use is shown in the room UI.
-3. **ENet** (bundled with LÖVE 11 as `require "enet"`) with three channels:
-   - `0` unreliable, sequenced: input frames and snapshots.
-   - `1` reliable: events, join/leave, chat, restart.
+   - **Decided:** our own rendezvous + relay. Rejected: Epic Online Services P2P, Steam networking, UPnP, and VPN tools (Tailscale, ZeroTier, Hamachi). Players never set up port forwarding.
+3. **Room codes (Phase 3):** a short code of digits only, read out or pasted to a friend; no accounts needed.
+4. **Port:** the game listens on UDP **26967** by default.
+5. **ENet** (bundled with LÖVE 11 as `require "enet"`) with three channels:
+   - `0` unreliable, sequenced: player state updates and world snapshots.
+   - `1` reliable: events, claims, `setPlayer`/`impulse`, join/leave, chat, votes, restart.
    - `2` reliable: initial full state on join.
 
 ---
 
 ## Netcode
 
-### Client → host
-- One input frame per tick. Each packet carries the last ~8 frames, so a lost packet costs nothing.
-- **Host side:**
-  - The host keeps a 1–2 tick buffer per client.
-  - If a frame is missing when needed, the client's last frame is repeated.
-  - The host validates frames (tick range, rate). Anything else is ignored.
+### Budget: small and fast
+Network load stays as small as possible; speed beats completeness.
+- **No session logging or recording.** Gameplay sessions are not logged, recorded or replayed; nothing is sent or stored just to keep a history.
+- **Only what another machine needs to draw or decide.** Declared net fields only; deltas carry changed fields only; positions and velocities quantized; no names on the wire (`netstate.pack` order).
+- **Newest state, not history.** Unreliable updates are never resent; a lost one is replaced by the next. Only events, claims and session messages are reliable, and they stay few and small.
+- **Low, fixed rates.** Player states and world snapshots at **20 Hz** to start (30 Hz if it looks choppy), not every 60 Hz tick; the world hash is a few bytes.
+- **Quantized values.** Positions in 1/8 px, velocities in 1/16 px per tick.
+- **Small packets.** Each packet fits one UDP datagram (well under the ~1200-byte safe MTU); a full snapshot that does not fit is split, never sent as one huge packet.
 
-### Host → client
-- Snapshots at 30 Hz on channel 0. Each snapshot is a delta against the last snapshot that client acked. A full snapshot is sent on join or after a long gap.
+### Owner → host (each machine's own player)
+- The owner runs its player's controller every tick (the platformer, or a level's custom controller script, in the sandbox) against the world as it sees it: statics, plus enemies, props and other players as last received.
+- 20 times a second it sends that player's net fields with a sequence number, the authority number it last applied and the level generation. Unreliable: a lost packet is replaced by the next one.
+- The host keeps only the newest valid update per player, runs the referee checks, and forwards it.
+
+### Host → clients (the world)
+- World snapshots at 20 Hz on channel 0, with the latest forwarded player states. Each snapshot is a delta against the last snapshot that client acked; a full snapshot is sent on join, restart, after a long gap and periodically.
 - Bodies are addressed by ID. `removed` comes as an event, so a missing body in a delta just means "unchanged".
 - **Rough size:**
   - full snapshot: 5 players + ~150 bodies × ~20 B ≈ 3 KB;
   - typical delta: a few hundred bytes;
   - host upload stays well under 100 KB/s for 4 clients.
 
+### Interactions between owners
+Movement is easy; the hard part is anything where a player meets something it does not own.
+
+**Claims are optimistic (decided).** A machine that claims something never waits for the host: it shows the result at once and carries on. The host's answer comes later and either confirms it (nothing changes) or denies it. On a denial the claimer corrects itself:
+- the world (enemies, blocks, props, other players) goes back to what the host's next snapshot and events say;
+- its own player's movement from the claim (a bounce, a jump off a stomp) is never undone, so nobody gets yanked around.
+
+Rules (decided):
+- **Death by enemy, hazard or falling out:** the victim's machine decides, from what it sees, reports it, and respawns itself at its checkpoint. This favours the victim, who sees others slightly late.
+- **Stomping an enemy:** the stomper bounces and shows the enemy squashed at once, and claims "stomped enemy N"; the host checks it, kills the enemy and sends the event. Two stomps on one enemy: the first claim wins; the second player still keeps its bounce.
+- **Kicking or bumping blocks and props:** shown at once, claimed; the host decides and sends the result.
+- **Kicking another player:** the kicker claims the hit; the host checks it and sends the victim's machine an `impulse`, which the victim applies to its own player.
+- **Explosions hitting players:** each machine checks its own player against the host's explosion event and applies its own death or knockback.
+- **Grabbing and throwing props:** the carrier picks the prop up at once and draws it in hand with no lag; the grab is a claim and the host attaches the prop. The throw is a claim with the velocity.
+- **Checkpoints:** the owner sets its own spawn point at once and claims the touch; the host raises the flag and records that player's spawn point.
+- **Win / goal zone:** the host decides from the player positions it receives.
+- **Players collide but do not push.** Each machine treats other players as solid, immovable bodies at their last known position: walking into someone stops you, nobody slides, and you can stand on heads (may look slightly floaty under lag). Kicks are the way to shove someone (`impulse`).
+  - **Never stuck on a stale position:** lag can leave two players overlapping, or one wedged between a wall and another player who has already moved. The owner only moves its own player out of the overlap; if it cannot (a wall in the way), the two pass through each other until they are apart.
+  - Replaces today's shared sideways push (`ARCHITECTURE.md`, Physics rules); changed when Phase 2 builds player collision.
+  - Rejected: a real shared push. It needs the host to simulate every player (input delay or prediction with rewind), which rubber-bands under lag and costs the most to build.
+- **Carrying a player:** built right after the base netcode is stable (late in Phase 2). The carrier shows the other player in its hands at once and claims the grab; the host hands ownership of the carried player to the carrier (`setPlayer` to the carried machine) and back on drop or throw (a new `setPlayer` with the throw velocity). Edge cases:
+  - the carrier leaves or dies: the carried player drops where it is and gets control back;
+  - both grab each other: the first claim wins;
+  - a late release: the carried player keeps following the carrier; the host resends until the carried machine confirms;
+  - a restart: nobody starts carried.
+
 ### Client presentation
-- **Remote players and bodies** are drawn ~100 ms behind, interpolated between snapshots.
-- **Own player is predicted:**
-  - The client runs `player:update` locally against statics and the latest snapshot's props, and keeps its input history.
-  - On each snapshot it rewinds to the acked tick and replays the unacked inputs.
-  - Small errors (a few px) are smoothed; large ones snap.
-- **The rule: clients predict movement, the host decides consequences.**
-  - Kills, stomps, grabs, block breaks, detonations and checkpoints are applied only when the host's snapshot and events say so.
-  - The client may play the local pose (kick swing, jump) at once.
+- **Own player:** drawn from local simulation, no delay.
+- **Remote players and world bodies** are drawn ~100 ms behind, interpolated between received updates, so the movement looks smooth despite the lower send rate and jitter.
+
+### Open questions
+Tracked in `OPEN_DECISION.md`.
 
 ### Session flow
-- **Join:** the current `level.seed`, then a full snapshot on channel 2, then deltas.
-- **Late join:** allowed. The new player spawns at the level spawn.
-- **Leave:** that player is removed for everyone. Anything it carried is dropped.
-- **Restart:** decided by a vote (more than half the players, then a 5 s countdown; `scenes/gameplay.lua`). Votes are toggled by clients over the reliable channel; the host counts them, runs the countdown and broadcasts `restart{seed}` (`gameplay.takeOutbox`); everyone, the host included, rebuilds the level through `gameplay.restart(seed)` and the host resends a full snapshot.
-- **Host leaves:** in v1 the session ends with a message. Host migration comes later. It needs every simulation field in the net schema so a client can resume from the last full snapshot.
+- **Hosting and joining (Phase 2):** `love2d . --host` opens a session; `love2d . --join <ip>` joins one. Room codes replace typing an IP in Phase 3.
+- **Levels (Phase 2):** bundled levels only. On connect the host checks the level's sha256 and the game version, and refuses a mismatch with a message.
+- **Join:** the current `level.seed` and generation, then a full snapshot on channel 2, then deltas. The new player's machine becomes its owner.
+- **Late join:** allowed. The new player spawns at the host's latest checkpoint (the host player's current spawn point; a host `setPlayer`).
+- **Leave or time out:** that player is removed for everyone. Anything it carried is dropped. A peer that stops answering for **5 s** is dropped with a clear message, instead of the session hanging. If the host stops answering, every client returns to the menu with a message.
+- **Main menu ends the session.** There is no in-game menu that keeps the game running: going to the main menu (ESC) leaves the session. The host going to the main menu ends the session for everyone.
+- **Restart:** decided by a vote (more than half of all players in the session, then a 5 s countdown; a player joining during the countdown does not cancel it; `scenes/gameplay.lua`). Votes are toggled by clients over the reliable channel; the host counts them, runs the countdown and broadcasts `restart{seed}` (`gameplay.takeOutbox`) with a new generation; everyone, the host included, rebuilds the level through `gameplay.restart(seed)` and the host resends a full snapshot.
+- **Host leaves:** in v1 the session ends with a message. Host migration comes later. It needs every world field in the net schema so a client can resume from the last full snapshot.
 
 ### Who runs what
 | | Host | Client |
 |---|---|---|
-| physics, rules, enemies | yes | own player only (prediction) |
+| own player (movement, controller, pose) | yes | yes |
+| other players | draws owners' updates | draws owners' updates |
+| world physics, rules, enemies | yes | no (draws snapshots) |
 | entity type scripts | full | view mode: `load()` for images, base `draw` |
 | level scripts | full | draw hooks (`drawBehind`, `drawWorld`, `drawHud`) and `message`, from synced state only |
-| player controllers (custom) | full | its `draw`; prediction of a custom controller is a Phase 2 question (it is script code, so the client would have to run it on its own player) |
+| `player.net` (script state on a player) | owns it (level scripts run here) | receives it |
+| player controllers (custom) | for its own player | for its own player (sandboxed), plus `draw` |
 | fx (debris, particles, shake, sounds) | from events | from events |
 
 ---
@@ -305,7 +354,8 @@ Uploads may use common media types. The server normalizes them so every client g
   - only hash-verified repository levels run online;
   - per-call instruction and memory limits stop runaway scripts;
   - running scripts in a separate process with no filesystem or network access is the long-term goal.
-- **The host is trusted by its peers** (co-op), so there's no anti-cheat beyond host-side input validation.
+- **The host is trusted by its peers** (co-op), so there's no anti-cheat beyond host-side validation. Each machine owns its player's movement, so a modified game can move its own player freely; the host's referee checks reject the obviously impossible.
+- **A level's custom controller script runs on every machine** (for that machine's own player), under the same sandbox and limits as on the host.
 - **Rate limits:** uploads, room creation, joins and reports are rate-limited per account and IP.
 - **Accounts:** guest device tokens at first, stored hashed. OAuth can be added later.
 
@@ -316,8 +366,9 @@ Uploads may use common media types. The server normalizes them so every client g
 | Phase | Scope | Done when |
 |---|---|---|
 | 0 (done) | Engine prerequisites: fixed step, N players, input frames, IDs, net schema, events, seeded RNG, sandbox hardening, JSON encoder, package-root loader | The game plays the same at a fixed 60 Hz; a headless test feeds the same inputs twice and gets the same state hash |
-| 1 | Local co-op, 2–5 players | Every level rule works with N players: stomps, carrying, throwing at each other, per-player checkpoints, blasts |
-| 2 | LAN netcode, direct IP | 5 instances on one PC or a LAN play cleanly; still playable at 150 ms and 5% loss (emulated) |
-| 3 | Backend: accounts + level repository | Upload → validate/normalize → browse → download → play an uploaded level, including gif/webp/mp3 assets |
-| 4 | Lobby + NAT punching + relay | Two players on different home networks find each other in the public list and play |
-| 5 | Polish | Host migration, reconnect, moderation tools, replays from recorded inputs |
+| 1 (done) | Local co-op, 2–5 players (couch co-op now deprecated: one player per machine) | Every level rule works with N players: stomps, carrying, throwing at each other, per-player checkpoints, blasts |
+| 2 | LAN netcode, direct IP: owner-driven player movement, host-owned world. Tested on one PC and a LAN (no port forwarding needed there). | 5 instances on one PC or a LAN play cleanly; still playable at 150 ms and 5% loss (emulated); no lasting desync or broken session |
+| 3 | Plug-and-play internet play: UDP rendezvous (NAT hole punching) + relay fallback, joined by a short room code. No accounts, no public list. | Two players on different home networks connect with a room code, with no router setup; relay fallback works when punching fails |
+| 4 | Backend: accounts + level repository | Upload → validate/normalize → browse → download → play an uploaded level, including gif/webp/mp3 assets |
+| 5 | Public lobby (room list, accounts) on top of Phase 3's connectivity | Two strangers find each other in the public list and play |
+| 6 | Polish | Host migration, reconnect, moderation tools |

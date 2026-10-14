@@ -1,8 +1,8 @@
 # Development Phase
 
-Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
+Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Undecided choices are tracked in `OPEN_DECISION.md`. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
 
-Last updated: 2026-10-14 (Phase 1 complete, leftovers included; next is Phase 2).
+Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 starts with the move to LÖVE 12).
 
 ---
 
@@ -10,12 +10,15 @@ Last updated: 2026-10-14 (Phase 1 complete, leftovers included; next is Phase 2)
 
 | Topic | Decision |
 |---|---|
-| Source of truth | **We cannot trust sync to work perfectly.** The lobby host is the single source of truth for all game state and outcomes; its snapshots overwrite client state and clients converge on it. Details: `NETWORKING.md` (Source of truth). |
+| Source of truth | **Priority: no desync and no broken session.** We cannot trust sync to work perfectly, so every piece of state has exactly one owner: a player's movement belongs to its machine, everything else to the lobby host. Updates are absolute and newest-wins; the host overrides a player with a numbered `setPlayer`; level generations drop stale messages; world hashes detect drift. Details: `NETWORKING.md` (Source of truth). |
 | Players per machine | **One player per machine (per host/client).** Multiplayer means network play. Local couch co-op is **deprecated**: frozen behind `--local-coop`, kept working by the existing tests but not extended, and left for a far-future return. New work (netcode, HUD, input, lobby) assumes one local player and must not add couch co-op complexity. |
-| Gamepads | **Deprecated for now.** The one player plays on keyboard layout 1. Gamepads work only with `--local-coop`; `level.json` actions may still list `gamepad` inputs (accepted, unused otherwise). Gamepad support for the single player can come back later. |
-| Online model | Host-authoritative P2P (ENet/UDP) with a backend for accounts, level repository, lobby, NAT punching and relay. Clients send inputs; the host sends snapshots and events. No lockstep. |
+| Gamepads | **Deprecated and parked.** The one player plays on keyboard layout 1. Gamepads work only with `--local-coop`; `level.json` actions may still list `gamepad` inputs (accepted, unused otherwise). Not to be discussed again until there is nothing else to do. |
+| Network load | **Small and fast.** No gameplay session logging, recording or replays. Send only declared, changed, quantized fields at ~20–30 Hz; unreliable updates are never resent; packets fit one UDP datagram. Details: `NETWORKING.md` (Budget). |
+| Online model | P2P (ENet/UDP) with a backend for accounts, level repository, lobby, NAT punching and relay. **Each machine owns its own player's movement** and sends its state (newest wins, missed updates catch up); **the host owns the world and the session** and is the referee and relay for player movement. No lockstep, no client prediction/rewind. Details: `NETWORKING.md` (Source of truth, Netcode). |
 | Session size | Up to **5 players** (1 host + 4 clients). |
-| Backend stack | Go (or Node) + Postgres + S3-compatible storage. |
+| Backend stack | **Go** + Postgres + S3-compatible storage. |
+| Engine version | **Move to LÖVE 12** (it has HTTPS; bundling `lua-https` for 11.5 is rejected), as the first step of Phase 2, so the netcode is written and tested once on the engine it ships with. |
+| Connectivity | Our own rendezvous (hole punching) + relay, digits-only room codes, UDP port **26967**. No Epic/Steam/UPnP/VPN tools; players never set up port forwarding. |
 | User levels | Custom Lua in uploaded levels is **allowed**, behind a hardened sandbox. |
 | Uploaded assets | png, jpg/jpeg, gif, webp, wav, ogg, mp3. The server converts webp and gif to png (LÖVE 11.5 can't decode them); animated gif becomes a spritesheet plus `<name>.anim.json`. |
 | Script access | **Raw access, no API proxies.** Scripts get the real level, players and entities, Garry's Mod–style flexibility. Security relies on the sandbox, protected phases and the reachability audit, later on process isolation. |
@@ -55,7 +58,7 @@ Last updated: 2026-10-14 (Phase 1 complete, leftovers included; next is Phase 2)
 - After 8 s without a beat during a level, the thread writes `watchdog_report.json` and ends the process with `_exit`.
 - The next launch shows why the game closed. A downloaded level (`online/<sha256>`) goes on `blocked_levels.json`; `levelpack.mount` and the loader refuse it. Bundled and local levels are reported, not blocked.
 - Tested in `tests/sim_test.lua` (with a 0.3 s timeout, no exit). The real exit was checked once by hand with a scratch game: a true `while true do end` freeze ended with exit code 3 after 0.77 s (0.5 s timeout), and the next launch blocked the level.
-- Option B (simulation in its own thread) still belongs to Phase 2.
+- Option B (simulation in its own thread): after Phase 2. Clients will draw from snapshots by then, so the host can draw the same way and the simulation can move to a thread with a much smaller change. It matters most once uploaded levels run online (Phase 4).
 
 ### Publishing-safety plan, step 3: flexibility (done)
 Scripts get these directly on the level (reference: `MODDING.md`):
@@ -90,27 +93,35 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 
 ## Next
 
-**Phase 2: LAN netcode over direct IP** (`NETWORKING.md`, Netcode). Open questions to settle first:
-- predicting a player who uses a custom (script) controller: the client would run that script code for its own player;
-- the "view mode" for scripts on clients (draw hooks and `message` only).
+**Phase 2: LAN netcode over direct IP** (`NETWORKING.md`, Netcode). Model: each machine owns its own player's movement; the host owns the world and the session. Every machine has exactly one local player. Phase 2 is tested on one PC and a LAN; internet play without port forwarding is Phase 3.
 
-Every machine has exactly one local player; build Phase 2 for that (don't design around several local slots).
+Decided: players collide but do not push each other (solid, immovable to each other; kicks shove; an owner that cannot get out of an overlap passes through, so nobody gets stuck). Kick and grab still apply.
+
+All decisions needed for Phase 2 are made (`OPEN_DECISION.md`, Decided). New open questions go there.
+
+Settled by the model: a custom (script) controller runs on its owner's machine for that player; clients run only the draw hooks and `message` of level scripts.
 
 Then, in rough order:
-1. ENet host/client over direct IP; join sends `level.seed` + a full snapshot; the outbox's session messages go on the reliable channel.
-2. Inputs up (`input.pack`), snapshots down, deltas against acked snapshots, periodic full snapshots and a state hash so clients detect drift.
-3. Prediction of the own player with rewind/replay; interpolation (~100 ms) of everyone else.
-4. Simulation in its own thread (watchdog option B).
-5. Done when 5 instances play cleanly on one PC/LAN and stay playable at 150 ms and 5% emulated loss.
+0. Move to LÖVE 12 (after checking it has a stable release and that `enet`, `love.data` and every test suite work on it); re-check the LÖVE 11.5 limits written in the docs.
+1. ENet host/client over direct IP; join sends `level.seed`, the level generation and a full snapshot; the outbox's session messages go on the reliable channel.
+2. Owner → host player state (newest wins, sequence + authority + generation numbers); host forwards it and runs referee checks; `setPlayer` overrides.
+3. Host → clients world snapshots and deltas, periodic full snapshots and a world hash so clients detect drift.
+4. Optimistic claims and their rules (stomps, kicks, deaths, props, checkpoints, `impulse`), then carrying players (`NETWORKING.md`, Interactions between owners).
+5. Interpolation (~100 ms) of remote players and world bodies; timeouts and clean leave handling.
+6. Done when 5 instances play cleanly on one PC/LAN, stay playable at 150 ms and 5% emulated loss, and never desync or break the session.
+
+Testing: a built-in `--net-lag <ms> --net-loss <%>` emulator for the 150 ms / 5% loss check.
 
 ### Roadmap after that (from `NETWORKING.md`)
 | Phase | Scope |
 |---|---|
 | 1 (done) | Local co-op polish, plus the local-player view and `restart{seed}` |
-| 2 | LAN netcode over direct IP: ENet, snapshots and deltas, prediction, interpolation. Option B of the watchdog fits here. |
-| 3 | Backend: accounts + level repository (upload pipeline, asset conversion, headless load test) |
-| 4 | Lobby + NAT punching + relay. Needs HTTPS: LÖVE 11.5 has no TLS, so ship `lua-https` or move to LÖVE 12. |
-| 5 | Polish: host migration, reconnect, moderation, replays |
+| 2 | LAN netcode over direct IP: ENet, owner-driven player state, host world snapshots and deltas, interpolation. Starts with the move to LÖVE 12. |
+| 3 | Plug-and-play internet play: rendezvous (NAT hole punching) + relay fallback, room codes, no accounts. Players never set up port forwarding. |
+| 4 | Backend: accounts + level repository (upload pipeline, asset conversion, headless load test). Needs HTTPS: LÖVE 11.5 has no TLS, so ship `lua-https` or move to LÖVE 12. |
+| 5 | Public lobby (room list, accounts) on top of Phase 3 |
+| 6 | Polish: host migration, reconnect, moderation |
+| after 2 | Simulation in its own thread (watchdog option B) |
 | later | Process isolation for scripts (the real security boundary) |
 
 ---

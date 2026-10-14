@@ -77,7 +77,8 @@ Code layout, the running level, gameplay rules and physics rules are in `ARCHITE
 Centralized backend with UDP P2P gameplay and one authoritative host (up to 5 players).
 
 - **Backend:** accounts, level repository, lobby, NAT traversal and relay. Does not simulate gameplay.
-- **Host:** runs physics, Lua, AI, game state and triggers at a fixed 60 Hz. Clients send inputs; the host sends snapshots of declared net state, plus events.
+- **Host:** runs the world (physics, Lua, AI, game state and triggers) at a fixed 60 Hz and sends snapshots of declared net state, plus events.
+- **Every machine:** simulates its own player and sends that player's state; the host checks and forwards it.
 - **Transport:** ENet over UDP.
 
 The full design (engine prerequisites, level repository, lobby, connectivity, netcode, roadmap) is in `NETWORKING.md`.
@@ -86,8 +87,8 @@ The full design (engine prerequisites, level repository, lobby, connectivity, ne
 
 ## Authority and Security
 
-- Host is authoritative. Clients send inputs, not state.
-- Sync is never trusted to be perfect: the lobby host is the single source of truth, its snapshots overwrite client state, and clients converge on it (full snapshots, state hashes). See `NETWORKING.md` (Source of truth).
+- Host is authoritative for the world and the session; each machine is authoritative for its own player's movement, with the host as referee (it can override with `setPlayer`).
+- Sync is never trusted to be perfect: every piece of state has one owner, updates are absolute and newest-wins, stale messages are dropped by generation and authority numbers, and world hashes detect drift. See `NETWORKING.md` (Source of truth).
 - Lua affecting gameplay runs in the authoritative simulation.
 - Community levels cannot run system code.
 - Native engine changes are separate from level content and need explicit install/trust.
@@ -96,6 +97,6 @@ The full design (engine prerequisites, level repository, lobby, connectivity, ne
 
 ## Simulation Requirements
 
-Fixed timestep · seeded deterministic RNG · stable entity IDs · host-authoritative state · snapshot/delta sync · client prediction/interpolation · replay/input recording · host migration · Lua execution limits. See `NETWORKING.md` → Engine prerequisites.
+Fixed timestep · seeded deterministic RNG · stable entity IDs · host-owned world, owner-driven player movement · snapshot/delta sync · interpolation · small, fast packets (no session recording) · host migration · Lua execution limits. See `NETWORKING.md` → Engine prerequisites.
 
 The design separates community extensibility from system authority: creators compose gameplay freely, while the engine, OS, and network boundaries stay controlled.

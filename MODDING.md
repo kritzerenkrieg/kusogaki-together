@@ -235,10 +235,14 @@ Draw hooks get `ui`. There is no `love`.
 
 ## Online play: host and clients
 
-In online play the host runs the game and the other players see it (`NETWORKING.md`). For a level that works online:
+In online play the host runs the world, and each machine moves its own player (`NETWORKING.md`). For a level that works online:
 
-- Gameplay (stages, controllers, `update`, `onTouch` ...) runs on the host only. Script locals and upvalues are host-only.
-- What clients must see goes in synced state: entity fields (base fields plus `Type.netFields`), `player.net`, `level.net`, `level.camera`, `level.gravity`, `level.finished`. These must be plain data: numbers, strings, booleans, and tables of those.
+- World gameplay (stages, `update`, `onTouch`, entity scripts ...) runs on the host only. Script locals and upvalues are host-only.
+- **Player controllers run on each player's own machine**, for that player only (`level.playerController`, `player.controller`). A controller must read only its player, its input and synced state (`level.gravity`, `level.net`, entity net fields), never host-only locals.
+- **Moving players from a level script:**
+  - *Once* (teleport, launch, respawn): just set it (`player.x = 500`, `player.vy = -400`). The host sends the change to that player's machine.
+  - *Continuously* (wind, conveyor, gravity zone, magnet): don't set the player every tick; that arrives late on the player's machine and fights its controls. Put the effect in synced state (`level.gravity`, `body.gravityScale`, a zone list in `level.net`) and let the controller apply it; every machine then pushes its own player smoothly. A player changed every tick anyway is only corrected at the send rate.
+- What clients must see goes in synced state: entity fields (base fields plus `Type.netFields`), `player.net` (owned by the host), `level.net`, `level.camera`, `level.gravity`, `level.finished`. These must be plain data: numbers, strings, booleans, and tables of those.
 - Drawing hooks run everywhere. Draw from synced state, never from host-only locals.
 - One-off things to show (a popup, a sound) go through `level:send(name, data)`; every machine's `message` hook gets them.
 - Only the host spawns. Spawned entities get ids after the placements', and clients learn about them from the `spawned` event and snapshots.
