@@ -252,3 +252,17 @@ do
     check("everyone alive in the zone wins", level.finished and level.finished.outcome == "win",
         level.finished and level.finished.message)
 end
+
+-- The walk cycle uses all four frames of its row: 2, 3, 4, 1.
+do
+    local view = require("core.player.view")
+    local playerModule = require("core.player")
+    local walker = playerModule.new(0, 0)
+    walker.state = "run"
+    local columns = {}
+    for step = 0, 7 do
+        walker.animationTime = step * 0.2 + 0.01 -- one sprite frame lasts 0.2 s
+        columns[#columns + 1] = (view.frameFor(walker))
+    end
+    helpers.check("the walk cycle is 2, 3, 4, 1", table.concat(columns, "") == "23412341", table.concat(columns, ""))
+end

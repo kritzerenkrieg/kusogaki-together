@@ -33,7 +33,8 @@ local function frameFor(self)
     elseif self.state == "rise" or self.state == "fall" then
         return self.carrying and 4 or 1, self.carrying and 2 or 3
     elseif self.state == "run" then
-        return (math.floor(self.animationTime / ANIM.frame) % 3) + 2, self.carrying and 2 or 1
+        -- Walk cycle 2, 3, 4, 1: the standing frame is the cycle's last step.
+        return (math.floor(self.animationTime / ANIM.frame) + 1) % 4 + 1, self.carrying and 2 or 1
     elseif self.state == "idle" and self.carrying then
         return 1, 2
     elseif self.state == "idle" and self.idleTime >= ANIM.longIdle then
@@ -41,6 +42,8 @@ local function frameFor(self)
     end
     return 1, 1
 end
+
+view.frameFor = frameFor
 
 function view.draw(self)
     -- Highlight a grabbable prop (C hold preview)
