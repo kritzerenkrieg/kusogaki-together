@@ -1,6 +1,6 @@
 -- Game and network protocol versions. Machines in one session must match both
 -- (checked when a client joins; see core/net/session.lua).
 return {
-    GAME = "0.1.6",
-    PROTOCOL = 3,
+    GAME = "0.1.7",
+    PROTOCOL = 4,
 }

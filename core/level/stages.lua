@@ -10,6 +10,7 @@ local blocks = require("core.level.blocks")
 local bounds = require("core.level.bounds")
 local props = require("core.level.props")
 local triggers = require("core.level.triggers")
+local claims = require("core.level.claims")
 
 local stages = {}
 
@@ -127,6 +128,7 @@ local DEFAULT_STAGES = {
     { "detonations", function(level) props.removeDetonated(level, simulated(level)) end },
     { "enemyDeaths", function(level) enemies.removeDead(level, simulated(level)) end },
     { "bounds", function(level) bounds.removeFallen(level, simulated(level)) end },
+    { "claims", function(level) claims.predict(level) end }, -- network clients show their claims at once
     { "playerAnimation", refreshPlayers },
     { "scripts", runScripts },
 }

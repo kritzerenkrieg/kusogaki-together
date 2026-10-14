@@ -17,6 +17,7 @@ local MAX_CLIENTS = protocol.MAX_PLAYERS - 1
 local TIMEOUT_MS = 5000      -- a peer silent this long is dropped (OPEN_DECISION C3)
 local HANDSHAKE_SECONDS = 5  -- a client must finish the handshake within this
 local MAX_STATES = 60        -- player states a client may send per second (20 expected)
+local MAX_CLAIMS = 60        -- claims a client may send per second
 
 local function now()
     return love.timer.getTime()
@@ -46,6 +47,7 @@ Host.__index = Host
 --     left(id)            a joined client left or timed out
 --     vote(id, on)        a joined client's player toggled its restart vote
 --     state(id, message)  a joined client's player state (core/net/playersync.lua)
+--     claim(id, message)  a joined client's claim (core/level/claims.lua)
 -- Returns the host, or nil and an error (port in use).
 function session.host(options)
     local address = (options.bind or "*") .. ":" .. (options.port or protocol.PORT)
@@ -112,6 +114,17 @@ local function hostReceive(self, entry, data)
         entry.states = entry.states + 1
         if entry.states <= MAX_STATES then
             self.handler.state(entry.id, message)
+        end
+    elseif entry.stage == "joined" and message.t == "claim" then
+        local second = math.floor(now())
+        if entry.claimSecond ~= second then
+            entry.claimSecond, entry.claims = second, 0
+        end
+        entry.claims = entry.claims + 1
+        if entry.claims <= MAX_CLAIMS then
+            self.handler.claim(entry.id, message)
+        else -- answered, so the client does not wait on it
+            send(entry.peer, { t = "verdict", g = message.g, c = message.c, ok = false, n = 0 }, protocol.RELIABLE)
         end
     elseif message.t == "reject" then
         entry.peer:disconnect_later()
@@ -226,6 +239,7 @@ Client.__index = Client
 --                               false and a reason)
 --   welcome(message)           joined: { you, seed, generation, players }
 --   world(message), events(message)  the host's world (core/net/worldsync.lua)
+--   verdict(message)           the host's answer to one of this machine's claims
 --   restart(message)           { seed, generation, players }
 --   joined(id), left(id)       another player came or went
 --   players(message)           the other players' states { g, list }
@@ -274,6 +288,7 @@ local CLIENT_EXPECTS = {
     ready = { welcome = true },
     joined = {
         restart = true, joined = true, left = true, players = true, setPlayer = true, world = true, events = true,
+        verdict = true,
     },
 }
 
@@ -307,7 +322,7 @@ local function clientReceive(self, data)
     elseif message.t == "joined" or message.t == "left" then
         self.handler[message.t](message.id)
     else
-        self.handler[message.t](message) -- restart, players, setPlayer, world, events
+        self.handler[message.t](message) -- restart, players, setPlayer, world, events, verdict
     end
 end
 
@@ -343,6 +358,13 @@ end
 function Client:sendState(message)
     if self.stage == "joined" then
         send(self.peer, message, protocol.STATE)
+    end
+end
+
+-- Send a claim (reliable, in order).
+function Client:sendClaim(message)
+    if self.stage == "joined" then
+        send(self.peer, message, protocol.RELIABLE)
     end
 end
 

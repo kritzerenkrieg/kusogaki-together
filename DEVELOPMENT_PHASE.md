@@ -2,7 +2,7 @@
 
 Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Undecided choices are tracked in `OPEN_DECISION.md`. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
 
-Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 steps 1–3, sessions, player state and the host's world over ENet, done).
+Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 steps 1–4, sessions, player state, the host's world and claims over ENet, done).
 
 ---
 
@@ -114,6 +114,16 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 - **Not yet:** a client cannot stomp-kill enemies (it bounces, the host does not know), kick, grab, break blocks or push props: those become claims in step 4. Explosions do not hurt client players yet (step 4 rule). World bodies on clients move by dead reckoning between snapshots, with small snaps (interpolation is step 5). The top-down level is on hold.
 - Checks: `tests/sim/net.lua` (full and delta snapshots between two levels: moves, removals, a spawn, level state, old and orphan deltas, hash mismatch → full; the scene sends a joined client the full world; a host script moving a remote player sends a setPlayer). By hand: two headless game processes over localhost; the client applied 1 full snapshot and 123 deltas with no hash mismatch, and both showed 72 entities and 13 enemies.
 
+### Phase 2 step 4: optimistic claims (done)
+- `core/level/claims.lua`: on a client, the rules note a claim when its player changes the host's world: stomp or kick an enemy (`stomp`, `kill`), break a block (`kickBlock`, `touchBlock`), kick a prop (`kickProp`), grab, throw or drop something. The client shows it at once (the `claims` stage: corpse or debris, the body taken out) and sends `claim{g, c, k, id, d, vx, vy}`; it never waits.
+- The host judges each claim with the same entity hooks the rules use (`onStomp`, `onKick`, `onTouch`), from where it sees the claimer (within 96 px), and answers `verdict{g, c, ok, n}`: n is the first world snapshot that shows the outcome. Until that snapshot arrives the claimed entity keeps the client's version (`worldsync.settle`); then the host's state applies, so a denied claim is undone (a stomped enemy comes back from `level.graveyard`, a denied grab drops). The claimer's own movement (its bounce) is never undone. The host does not show a client's corpse or debris twice to that client (`level.shown`).
+- **Kicking another machine's player** is a claim on every machine, the host's own player included; the host sends the victim's machine a `setPlayer` with the knock (`vx`, `vy`, `kb` knockback time), and the victim applies it to its own player.
+- **Explosions:** blast events carry their radius; each machine checks its own player against the host's explosions and decides its own death. An explosive block kills the client that broke it on its own machine.
+- **Carrying:** a player's state carries the id of what it holds; every machine holds it in that puppet's hands. Bodies a player carries keep the local position on clients. Carrying other players is still off online (late Phase 2).
+- **Protocol 4** (game 0.1.7).
+- **Not yet:** checkpoints are noticed by the host (the client gets its respawn point by `setPlayer` a round trip later) rather than claimed by the owner. A kicked or thrown prop on a client moves for 0.1 s, then waits for the host's snapshot (interpolation is step 5). Carrying players online.
+- Checks: `tests/sim/net.lua` (a client's stomp shown and claimed, host judging with the entity's hook, repeated, far and wrong claims denied, a pending entity keeping the client's version, a denied claim undone by the snapshot, kicking a remote player, explosions, and the scene answering a real client's claims). By hand: two headless game processes; the client kicked a prop and broke a block with its head, both claims were accepted, and both sides ended with the same 71 entities and no hash mismatch in 143 deltas.
+
 ## Next
 
 **Phase 2: LAN netcode over direct IP** (`NETWORKING.md`, Netcode). Model: each machine owns its own player's movement; the host owns the world and the session. Every machine has exactly one local player. Phase 2 is tested on one PC and a LAN; internet play without port forwarding is Phase 3.
@@ -128,7 +138,7 @@ Then, in rough order:
 1. ~~ENet host/client over direct IP; join sends `level.seed`, the level generation and a full snapshot; the outbox's session messages go on the reliable channel.~~ Done (above).
 2. ~~Owner → host player state (newest wins, sequence + authority + generation numbers); host forwards it and runs referee checks; `setPlayer` overrides.~~ Done (above).
 3. ~~Host → clients world snapshots and deltas, periodic full snapshots and a world hash so clients detect drift. Clients stop running world rules and level scripts' update; host scripts moving a remote player then send `setPlayer` (OPEN_DECISION A4); restart votes are shown to everyone.~~ Done (above); the hash replaces periodic full snapshots.
-4. Optimistic claims and their rules (stomps, kicks, deaths, props, checkpoints, `impulse`), then carrying players (`NETWORKING.md`, Interactions between owners).
+4. ~~Optimistic claims and their rules (stomps, kicks, deaths, props, checkpoints, `impulse`)~~ Done (above; checkpoints are host-noticed for now). Then carrying players (`NETWORKING.md`, Interactions between owners).
 5. Interpolation (~100 ms) of remote players and world bodies; timeouts and clean leave handling.
 6. Done when 5 instances play cleanly on one PC/LAN, stay playable at 150 ms and 5% emulated loss, and never desync or break the session.
 

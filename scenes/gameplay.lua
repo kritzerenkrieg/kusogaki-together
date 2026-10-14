@@ -49,6 +49,7 @@ local levelpack = require("core.levelpack")
 local session = require("core.net.session")
 local playersync = require("core.net.playersync")
 local worldsync = require("core.net.worldsync")
+local claims = require("core.level.claims")
 local script = require("core.script")
 local watchdog = require("core.watchdog")
 
@@ -93,7 +94,9 @@ local hostSends = {}        -- host: reliable messages for one client { id, mess
 local world = nil           -- host: worldsync.host(); client: worldsync.client()
 local worldEvents = {}      -- host: events for the clients since the last send
 local pendingSet = {}       -- host: id -> changes a script made to that remote player
-local removedBodies = {}    -- client: id -> entity a snapshot removed (late events still show it)
+local pending = {}          -- client: entity id -> claim in flight (core/net/worldsync.lua settle)
+local inflight = {}         -- client: claim number -> claim, until the host's verdict
+local claimSeq = 0          -- client: claims sent this session
 local NET_PORT, NET_BIND = nil, nil -- tests host on another port and address
 
 local MAX_SEED = 2147483646 -- seeds are 1..MAX_SEED (the MINSTD generator's range)
@@ -198,7 +201,7 @@ local function buildLevel(seed)
         worldEvents, pendingSet = {}, {}
     elseif NET_MODE == "client" then
         level.remoteWorld = true -- the host owns the world; this machine runs its player
-        world, removedBodies = worldsync.client(), {}
+        world, pending, inflight = worldsync.client(), {}, {}
     end
     votes, countdown = {}, nil
     tick = 0
@@ -349,6 +352,52 @@ local function presentRemoteEvents(id, names, puppet)
     level:protect(present.all, list, level, localIds())
 end
 
+-- Host: a kick claim hit `victim`: its own machine applies the knock.
+local function knock(victim, direction)
+    if not victim.remote then
+        claims.knock(victim, direction)
+        return
+    end
+    local record = remoteSync[victim.id]
+    if record then
+        local message = playersync.overrideMessage(record, {
+            vx = direction * playerModule.CONFIG.playerKickPush,
+            vy = playerModule.CONFIG.playerKickLift,
+            kb = playerModule.CONFIG.knockbackTime,
+        })
+        message.g = generation
+        hostSends[#hostSends + 1] = { id = victim.id, message = message }
+    end
+end
+
+-- This step's claims: a client sends them (its world changes stay pending
+-- until the host's verdict); the host judges its own player's kicks on other
+-- machines' players.
+local function handleClaims()
+    local list = claims.take(level)
+    if not net then
+        return
+    end
+    for _, claim in ipairs(list) do
+        if NET_MODE == "client" then
+            claimSeq = claimSeq + 1
+            inflight[claimSeq] = claim
+            if claim.k ~= "kickPlayer" then
+                pending[claim.id] = { expires = love.timer.getTime() + 3 }
+            end
+            local vx = claim.vx and math.max(-playersync.MAX_COORD, math.min(playersync.MAX_COORD, claim.vx))
+            local vy = claim.vy and math.max(-playersync.MAX_COORD, math.min(playersync.MAX_COORD, claim.vy))
+            net:sendClaim({ t = "claim", g = generation, c = claimSeq, k = claim.k, id = claim.id,
+                d = claim.d and (claim.d < 0 and -1 or 1), vx = vx, vy = vy })
+        elseif claim.k == "kickPlayer" then
+            local ok, victim, direction = claims.judge(level, claim.player, claim)
+            if ok and victim then
+                knock(victim, direction)
+            end
+        end
+    end
+end
+
 -- The host's side of the session (core/net/session.lua handler).
 local hostHandler = {
     accept = function()
@@ -387,6 +436,22 @@ local hostHandler = {
     vote = function(id, on)
         if remoteIds[id] then
             votes[id] = on or nil
+        end
+    end,
+    -- A client's claim: judged with the same entity hooks the rules use, and
+    -- answered with the snapshot number that will show the outcome.
+    claim = function(id, message)
+        local puppet = playerWithId(id)
+        local ok, victim, direction = false, nil, nil
+        if message.g == generation and puppet and puppet.remote then
+            level:protect(function()
+                ok, victim, direction = claims.judge(level, puppet, message)
+            end)
+        end
+        hostSends[#hostSends + 1] = { id = id, message = { t = "verdict", g = message.g, c = message.c,
+            ok = ok == true, n = world.n + 1 } }
+        if ok and victim then
+            knock(victim, direction)
         end
     end,
     -- A client's player state: newest wins; the referee refuses the clearly
@@ -447,7 +512,8 @@ local clientHandler = {
         end
         local state = worldsync.receive(world, message)
         if state then
-            level:protect(worldsync.apply, level, state, removedBodies)
+            worldsync.settle(pending, state.n, love.timer.getTime())
+            level:protect(worldsync.apply, level, state, pending)
             votes = {}
             for _, id in ipairs(message.vt) do
                 votes[id] = true
@@ -462,12 +528,34 @@ local clientHandler = {
             return
         end
         local list = {}
+        local own = slots[1].player
         for _, event in ipairs(message.list) do
+            if event.type == "explosion" and claims.caughtBy(own, event) then
+                own:die() -- this machine decides its own player's death
+            end
             if worldsync.FORWARD_EVENTS[event.type] then
-                list[#list + 1] = worldsync.localEvent(level, event, removedBodies)
+                list[#list + 1] = worldsync.localEvent(level, event)
             end
         end
         level:protect(present.all, list, level, localIds())
+    end,
+    -- The host's answer to a claim: the claimed entity follows the host again
+    -- from snapshot n on (a denied claim is undone by it). A denied grab drops
+    -- what this machine's player holds.
+    verdict = function(message)
+        local claim = inflight[message.c]
+        inflight[message.c] = nil
+        if message.g ~= generation or not claim or not level then
+            return
+        end
+        if pending[claim.id] then
+            pending[claim.id]["until"] = message.n
+        end
+        local own = slots[1].player
+        if not message.ok and claim.k == "grab" and own.carrying and own.carrying.id == claim.id then
+            own.carrying.held = false
+            own.carrying = nil
+        end
     end,
     restart = function(message)
         if message.generation <= generation then
@@ -659,7 +747,7 @@ function gameplay.update(delta)
         local seen = {} -- host: remote players before the step (did a script move one?)
         for _, player in ipairs(level.players) do
             if player.remote then
-                playersync.advance(player, step)
+                playersync.advance(player, step, level)
                 seen[player] = NET_MODE == "host" and playersync.watch(player) or nil
             end
         end
@@ -673,6 +761,7 @@ function gameplay.update(delta)
         for player, before in pairs(seen) do
             pendingSet[player.id] = playersync.changes(pendingSet[player.id], before, player)
         end
+        level:protect(handleClaims)
         local events = level:takeEvents()
         playersync.noteEvents(owner, events, slots[1].id)
         if NET_MODE == "host" and net then

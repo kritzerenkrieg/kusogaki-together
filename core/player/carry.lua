@@ -4,6 +4,7 @@
 local physics = require("core.physics")
 local config = require("core.player.config")
 local state = require("core.player.state")
+local claims = require("core.level.claims")
 
 local CONFIG = config.CONFIG
 local HAND_OVERLAP = 4 -- px the held prop overlaps the player's facing edge
@@ -29,12 +30,8 @@ local function grabbable(self, body)
     return not body.held and not body.killedBy
 end
 
--- Nearest loose prop, live enemy or free player overlapping the grab box, or
--- nil. Nothing on a network client yet (grabs become claims in step 4).
+-- Nearest loose prop, live enemy or free player overlapping the grab box, or nil.
 local function findGrabbable(self, level)
-    if level.remoteWorld then
-        return nil
-    end
     local box = carry.grabBox(self)
     local best, bestDist = nil, math.huge
     for _, list in ipairs({ level.props, level.enemies, level.players }) do
@@ -106,11 +103,18 @@ function carry.update(self, edges, level)
                 target.heldBy = self
                 target.onGround = false
             end
+            if not target.isPlayer then
+                claims.note(level, { k = "grab", id = target.id, player = self })
+            end
             state.emit(self, "grab")
         end
     end
     if edges.holdReleased and self.carrying then
+        local dropped = self.carrying
         release(self, self.facing * 30, 0, level.statics) -- gentle drop
+        if not dropped.isPlayer then
+            claims.note(level, { k = "drop", id = dropped.id, vx = dropped.vx, vy = dropped.vy, player = self })
+        end
         state.emit(self, "drop")
     end
 end

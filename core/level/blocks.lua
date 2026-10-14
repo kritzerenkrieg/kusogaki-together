@@ -1,5 +1,6 @@
 -- Hazard and block rules. See ARCHITECTURE.md (Level rules: hazards and blocks).
 local events = require("core.level.events")
+local claims = require("core.level.claims")
 
 local blocks = {}
 
@@ -38,8 +39,12 @@ function blocks.breakTouched(level, players)
         for _, player in ipairs(players) do
             if not block.brokenBy and touches(player, block) and block:onTouch(player) then
                 block.brokenBy = player
+                claims.note(level, { k = "touchBlock", id = block.id, player = player })
             end
         end
+    end
+    if level.remoteWorld then
+        return -- a client: the claims stage shows it, the host breaks it
     end
     for i = #level.blocks, 1, -1 do
         local block = level.blocks[i]
@@ -47,7 +52,9 @@ function blocks.breakTouched(level, players)
             level:removeEntity(block)
             if block.explosive then
                 events.entity("explosion", block)
-                block.brokenBy:die()
+                if not block.brokenBy.remote then -- a remote breaker died on its own machine
+                    block.brokenBy:die()
+                end
             else
                 events.entity("debris", block)
             end

@@ -30,6 +30,7 @@ core/
     netstate.lua        net state: snapshot fields per player/entity, wire form of events
     props.lua           prop rules (detonating props)
     triggers.lua        non-solid triggers touched by players
+    claims.lua          network clients: claims on the host's world, shown at once; host judging
   physics/            AABB physics; require("core.physics") is init.lua
     config.lua          tuning constants
     geometry.lua        overlap tests, contact records
@@ -160,9 +161,9 @@ Entity scripts are sandboxed (no `love`, no `require`), so the base `Entity` pro
 The scene runs `Level:update` in fixed 1/60 s ticks through `core/fixedstep.lua`, never with the raw frame time; a frame may run zero or several ticks. Drawing blends moving bodies (players, enemies, props) between the last two ticks (`core/graphics/interp.lua`) and puts them back afterwards, so the simulation never sees a blended position. The camera follows the blended players.
 
 
-**Network clients:** a client's level has `remoteWorld` set; the scene runs `level:update(delta, worldsync.CLIENT_STAGES)`, only its own player's stages (input, players, collisions, hazards, enemyTouch, bounds, playerAnimation), and applies the host's snapshots between ticks (`core/net/worldsync.lua`). Kicks and grabs hit nothing there until claims (step 4); props are immovable.
+**Network clients:** a client's level has `remoteWorld` set; the scene runs `level:update(delta, worldsync.CLIENT_STAGES)`, only its own player's stages (input, players, collisions, hazards, breakBlocks, enemyTouch, bounds, claims, playerAnimation), and applies the host's snapshots between ticks (`core/net/worldsync.lua`). What its player does to the world (stomps, kicks, breaking blocks, carrying) is noted as a claim (`core/level/claims.lua`) and shown at once by the `claims` stage; the host judges it. Props are immovable there (the host moves them).
 
-**Puppets (network play):** another machine's player is a puppet here (`player.remote`, `core/net/playersync.lua`): the `players` and `playerAnimation` stages skip it, and so do the rules that change a player (`hazards`, `breakBlocks`, `enemyTouch`, `detonations`, `enemyDeaths`, `bounds`; they get `stages.simulated(level)`), because its owner's machine runs those. Rules that only read players (`enemies` waking, `triggers`) see everyone. A puppet is solid but `immovable` (infinite mass, never settled against statics): a local player walking into it stops; one standing on a local player is ignored by that pair. Kicks and grabs skip puppets until claims (Phase 2 step 4). The scene places puppets from received states and moves them on at their last velocity for up to 0.1 s between states (`playersync.advance`).
+**Puppets (network play):** another machine's player is a puppet here (`player.remote`, `core/net/playersync.lua`): the `players` and `playerAnimation` stages skip it, and so do the rules that change a player (`hazards`, `breakBlocks`, `enemyTouch`, `detonations`, `enemyDeaths`, `bounds`; they get `stages.simulated(level)`), because its owner's machine runs those. Rules that only read players (`enemies` waking, `triggers`) see everyone. A puppet is solid but `immovable` (infinite mass, never settled against statics): a local player walking into it stops; one standing on a local player is ignored by that pair. Grabs skip puppets (carrying players online comes later); kicking one is a claim its own machine applies. The scene places puppets from received states and moves them on at their last velocity for up to 0.1 s between states (`playersync.advance`).
 
 A step runs the level's `stages` in order (`core/level/stages.lua`; a copy of the list, so a stage may change it). Each level gets fresh stage entries, and scripts may add, remove, replace or reorder them (`level:addStage`, `removeStage`, `replaceStage`, `findStage`). Finishing the level (`level:finish`) ends the step after the current stage. The built-in stages:
 
@@ -174,8 +175,9 @@ A step runs the level's `stages` in order (`core/level/stages.lua`; a copy of th
 6. `collisions`: dynamic body collisions (live players in join order, then props), then settle against statics.
 7. `triggers`, `hazards`, `breakBlocks`, `enemyTouch`: trigger touches, hazard touches, block breaking, enemy stomp/touch.
 8. `detonations`, `enemyDeaths`, `bounds`: detonated props explode; dead and detonated enemies removed (corpse or explosion); fallen bodies handled.
-9. `playerAnimation`: animation state refresh for players on the platformer controller.
-10. `scripts`: level scripts' `update`.
+9. `claims`: on a network client, this step's claims are shown at once (`core/level/claims.lua`); nothing on the host.
+10. `playerAnimation`: animation state refresh for players on the platformer controller.
+11. `scripts`: level scripts' `update`.
 
 Draw order: background (screen space); then, in world space inside `camera.pushWorld()`, level scripts' `drawBehind`, geometry, triggers, hazards, blocks, enemies, props, debris, corpses, the players (`level:drawPlayers`, player 1 on top, through a controller's `draw` when it has one), explosions and level scripts' `drawWorld`; then, in screen space, level scripts' `drawHud` and the HUD. The scene calls `camera.frame(level)` at draw time, after blending: by default it centers the midpoint of the live players' extent on both axes, clamped to the level (see `MODDING.md`, Camera).
 

@@ -298,6 +298,8 @@ Network load stays as small as possible; speed beats completeness.
 ### Interactions between owners
 Movement is easy; the hard part is anything where a player meets something it does not own.
 
+**Built (step 4):** `core/level/claims.lua`, `claim{g, c, k, id, d, vx, vy}` → `verdict{g, c, ok, n}`; see `DEVELOPMENT_PHASE.md` for the details.
+
 **Claims are optimistic (decided).** A machine that claims something never waits for the host: it shows the result at once and carries on. The host's answer comes later and either confirms it (nothing changes) or denies it. On a denial the claimer corrects itself:
 - the world (enemies, blocks, props, other players) goes back to what the host's next snapshot and events say;
 - its own player's movement from the claim (a bounce, a jump off a stomp) is never undone, so nobody gets yanked around.

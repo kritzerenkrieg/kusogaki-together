@@ -16,7 +16,7 @@ end
 -- enemies inside the radius die; enemies are thrown away from the blast.
 function blast.explode(level, source, players)
     local radius = source.blastRadius or 0
-    events.entity("explosion", source)
+    events.entity("explosion", source, { radius = radius }) -- clients check their own player
     for _, player in ipairs(players) do
         if not player.dead and distanceToBox(source.x, source.y, player) <= radius then
             player:die()

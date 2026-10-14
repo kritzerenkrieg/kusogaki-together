@@ -168,15 +168,16 @@ do
     player.vx, player.vy, player.facing, player.onGround, player.kickTime = 117.4, -360, -1, true, 0.1
     local p = playersync.pack(player)
     local back = playersync.unpack(p)
-    check("a player's wire form is 8 integers", playersync.valid(p) and #p == 8)
+    check("a player's wire form is 9 integers", playersync.valid(p) and #p == 9)
     check("positions round to 1/8 px, velocities to 1/16 px per tick",
         math.abs(back.x - 100.3) <= 1 / 16 and math.abs(back.y - 50.06) <= 1 / 16
         and math.abs(back.vx - 117.4) <= 60 / 32 and back.vy == -360)
     check("flags and timers survive", back.facing == -1 and back.onGround and not back.jumping and not back.dead
         and back.kickAnimationTime == nil and math.abs(back.kickTime - 0.1) < 0.01)
     check("bad wire players are refused", not playersync.valid({ 1, 2, 3 })
-        and not playersync.valid({ 1, 2, 3, 4, 99, 0, -1, 0 }) and not playersync.valid({ 0.5, 0, 0, 0, 0, 0, -1, 0 })
-        and not playersync.valid({ 0, 0, 0, 0, 0, 0, -1, 0, 9 }))
+        and not playersync.valid({ 1, 2, 3, 4, 99, 0, -1, 0, 0 })
+        and not playersync.valid({ 0.5, 0, 0, 0, 0, 0, -1, 0, 0 })
+        and not playersync.valid({ 0, 0, 0, 0, 0, 0, -1, 0, 0, 9 }))
     local function decodes(message)
         return protocol.decode(wire.encode(message), 1024) ~= nil
     end
@@ -349,6 +350,83 @@ do
     print(string.format("      world: full snapshot %d bytes", fullBytes))
 end
 
+-- ── Claims (core/level/claims.lua) ───────────────────────────────────────
+local claims = require("core.level.claims")
+do
+    local function firstOf(level, typeName)
+        for _, entity in ipairs(level.enemies) do
+            if entity.typeName == typeName then return entity end
+        end
+    end
+    -- A client (remoteWorld) stomps a dodon: shown at once, claimed.
+    local clientLevel = Level.load("example", { seed = 3 })
+    clientLevel.remoteWorld = true
+    local me = clientLevel:addPlayer(playerModule.new(0, 0))
+    local dodon = firstOf(clientLevel, "dodon")
+    local id = dodon.id
+    me.x, me.y, me.vy = dodon.x, dodon.y - dodon.h / 2 - me.h / 2 - 1, 240
+    me.prevY = me.y
+    me.input = {}
+    clientLevel:update(1 / 60, worldsync.CLIENT_STAGES)
+    local noted = claims.take(clientLevel)
+    local shown = false
+    for _, event in ipairs(clientLevel:takeEvents()) do
+        if event.type == "corpse" and event.id == id then shown = true end
+    end
+    check("a client's stomp is claimed and shown at once", #noted == 1 and noted[1].k == "stomp"
+        and noted[1].id == id and clientLevel:get(id) == nil and shown and me.vy < 0)
+
+    -- The host judges it with the dodon's own hook, from where it sees the player.
+    local hostLevel = Level.load("example", { seed = 3 })
+    local puppet = hostLevel:addPlayer(playersync.makePuppet(playerModule.new(dodon.x, dodon.y - 20)))
+    check("the host accepts a claim that holds", claims.judge(hostLevel, puppet, { k = "stomp", id = id }))
+    hostLevel:update(1 / 60)
+    check("and the enemy dies on the host", hostLevel:get(id) == nil)
+    check("a second claim on it is denied", not claims.judge(hostLevel, puppet, { k = "stomp", id = id }))
+    local far = firstOf(hostLevel, "dodon")
+    check("a claim from too far is denied", not claims.judge(hostLevel, puppet, { k = "kill", id = far.id, d = 1 }))
+    check("a claim on a missing or wrong entity is denied", not claims.judge(hostLevel, puppet,
+        { k = "grab", id = 99999 }) and not claims.judge(hostLevel, puppet, { k = "kickProp", id = far.id, d = 1 }))
+
+    -- Denied: the client keeps its version until the snapshot at the verdict,
+    -- then the host's (the enemy is back).
+    local denyHost = Level.load("example", { seed = 3 })
+    local hostSide, clientSide = worldsync.host(), worldsync.client()
+    worldsync.addClient(hostSide, 2)
+    local state = worldsync.capture(hostSide, denyHost)
+    local message = worldsync.messageFor(hostSide, 2, state, 0)
+    message.g, message.vt, message.cd = 1, {}, false
+    local rebuilt = worldsync.receive(clientSide, message)
+    local pending = { [id] = { expires = math.huge } }
+    worldsync.settle(pending, rebuilt.n, 0)
+    clientLevel:protect(worldsync.apply, clientLevel, rebuilt, pending)
+    check("a claimed entity keeps the client's version while pending", clientLevel:get(id) == nil)
+    pending[id]["until"] = rebuilt.n
+    worldsync.settle(pending, rebuilt.n, 0)
+    clientLevel:protect(worldsync.apply, clientLevel, rebuilt, pending)
+    check("a denied claim is undone by the host's snapshot", clientLevel:get(id) ~= nil
+        and clientLevel:get(id) == dodon)
+
+    -- Kicking another machine's player is a claim on every machine; the
+    -- host knocks the victim through its own machine.
+    local kickLevel = Level.load("example", { seed = 3 })
+    local kicker = kickLevel:addPlayer(playerModule.new(100, 240))
+    local victim = kickLevel:addPlayer(playersync.makePuppet(playerModule.new(100 + 16, 240)))
+    for _ = 1, 30 do kicker.input = {}; kickLevel:update(1 / 60) end
+    victim.y = kicker.y
+    claims.take(kickLevel)
+    kicker.input = { kick = true }
+    for _ = 1, 3 do kickLevel:update(1 / 60) end
+    local kick = claims.take(kickLevel)[1]
+    local ok, hit = claims.judge(kickLevel, kicker, kick or {})
+    check("kicking a remote player becomes a claim the host accepts", kick and kick.k == "kickPlayer"
+        and kick.id == victim.id and ok and hit == victim and victim.vx == 0)
+
+    local blastEvent = { type = "explosion", x = 100, y = 100, radius = 30 }
+    check("each machine checks its own player against explosions", claims.caughtBy(playerModule.new(120, 100),
+        blastEvent) and not claims.caughtBy(playerModule.new(200, 100), blastEvent))
+end
+
 -- ── The gameplay scene as host, with a client over localhost ─────────────
 do
     local gameplay = require("scenes.gameplay")
@@ -454,6 +532,22 @@ do
     local sent = got.setPlayer[count + 1]
     check("a host script moving a remote player sends a setPlayer", sent and sent.x == 500 and sent.sx == 500
         and sent.y == nil and sent.a == 3, sent and ("x %s y %s a %s"):format(sent.x, sent.y, sent.a))
+
+    -- Claims over the session: the client's player stands on a dodon (as the
+    -- host sees it) and claims the stomp; then claims it again.
+    local verdicts = {}
+    client.handler.verdict = function(message) verdicts[#verdicts + 1] = message end
+    local target
+    for _, enemy in ipairs(gameplay.getLevel().enemies) do
+        if enemy.typeName == "dodon" then target = enemy break end
+    end
+    puppet.x, puppet.y = target.x, target.y - 20
+    client:sendClaim({ t = "claim", g = got.welcome.generation, c = 1, k = "stomp", id = target.id })
+    client:sendClaim({ t = "claim", g = got.welcome.generation, c = 2, k = "stomp", id = target.id })
+    run(200, function() return #verdicts >= 2 end)
+    check("the host accepts a claim that holds and kills the enemy", verdicts[1] and verdicts[1].c == 1
+        and verdicts[1].ok and verdicts[1].n > 0 and gameplay.getLevel():get(target.id) == nil)
+    check("the same claim again is denied", verdicts[2] and verdicts[2].c == 2 and not verdicts[2].ok)
 
     client:close()
     run(60)

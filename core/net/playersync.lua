@@ -9,13 +9,14 @@
 -- last velocity for a short while (dead reckoning); step 5 replaces that with
 -- interpolation.
 --
--- Wire form of a player (`p`): a list of 8 integers
---   { x, y, vx, vy, flags, kickTime, kickAnimationTime, respawns }
+-- Wire form of a player (`p`): a list of 9 integers
+--   { x, y, vx, vy, flags, kickTime, kickAnimationTime, respawns, carrying }
 -- positions in 1/8 px, velocities in 1/16 px per tick (60 Hz), timers in
 -- ticks (kickAnimationTime -1 = none), flags: 1 facing right, 2 on ground,
--- 4 jumping, 8 dead. The displayed state (idle, run...) is derived from these
--- on each machine.
+-- 4 jumping, 8 dead; carrying: the id of the entity it holds (0: none). The
+-- displayed state (idle, run...) is derived from these on each machine.
 local state = require("core.player.state")
+local carry = require("core.player.carry")
 
 local playersync = {}
 
@@ -62,17 +63,18 @@ function playersync.pack(player)
         clamp(round((player.kickTime or 0) * TICK), 0, MAX_TIMER),
         player.kickAnimationTime and clamp(round(player.kickAnimationTime * TICK), 0, MAX_TIMER) or -1,
         clamp(player.respawns or 0, 0, 65535),
+        (player.carrying and not player.carrying.isPlayer and player.carrying.id) or 0,
     }
 end
 
 -- Is `p` a well-formed wire player? (Untrusted input.)
 function playersync.valid(p)
-    return type(p) == "table" and #p == 8 and next(p, 8) == nil
+    return type(p) == "table" and #p == 9 and next(p, 9) == nil
         and isInt(p[1], -playersync.MAX_COORD, playersync.MAX_COORD)
         and isInt(p[2], -playersync.MAX_COORD, playersync.MAX_COORD)
         and isInt(p[3], -MAX_VELOCITY, MAX_VELOCITY) and isInt(p[4], -MAX_VELOCITY, MAX_VELOCITY)
         and isInt(p[5], 0, 15) and isInt(p[6], 0, MAX_TIMER) and isInt(p[7], -1, MAX_TIMER)
-        and isInt(p[8], 0, 65535)
+        and isInt(p[8], 0, 65535) and isInt(p[9], 0, playersync.MAX_COORD)
 end
 
 -- Wire player -> fields ({ x, y, vx, vy, facing, onGround, jumping, dead,
@@ -90,6 +92,7 @@ function playersync.unpack(p)
         kickTime = p[6] / TICK,
         kickAnimationTime = p[7] >= 0 and p[7] / TICK or nil,
         respawns = p[8],
+        carryingId = p[9],
     }
 end
 
@@ -144,8 +147,10 @@ function playersync.apply(player, fields)
 end
 
 -- One tick of a puppet: keep moving at its last velocity for a short while,
--- run its timers, and pick the displayed state and animation clocks.
-function playersync.advance(player, delta)
+-- run its timers, pick the displayed state and animation clocks, and hold
+-- what it carries in its hands. On a network client (`level.remoteWorld`)
+-- what it carries comes from its owner's state; on the host from its claims.
+function playersync.advance(player, delta, level)
     player.prevY = player.y
     player.syncAge = player.syncAge + delta
     if player.syncAge <= playersync.EXTRAPOLATE then
@@ -157,6 +162,16 @@ function playersync.advance(player, delta)
         player.kickAnimationTime = player.kickAnimationTime + delta
     end
     state.animate(player, delta)
+    if level and level.remoteWorld then
+        local body = (player.carryingId or 0) > 0 and level:get(player.carryingId) or nil
+        player.carrying = body and not body.isPlayer and body or nil
+        if player.carrying then
+            player.carrying.held = true
+        end
+    end
+    if player.carrying then
+        carry.attach(player)
+    end
 end
 
 -- ── Owner (this machine's own player) ────────────────────────────────────
@@ -196,6 +211,10 @@ function playersync.override(owner, player, message)
     player.x, player.y = message.x or player.x, message.y or player.y
     player.vx, player.vy = message.vx or player.vx, message.vy or player.vy
     player.prevY = player.y
+    if message.kb then -- kicked by another player: helpless for a moment
+        player.knockback = message.kb
+        player.onGround = false
+    end
     if message.sx and message.sy then
         player:setSpawn(message.sx, message.sy)
     end

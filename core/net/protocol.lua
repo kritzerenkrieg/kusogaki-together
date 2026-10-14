@@ -24,8 +24,12 @@
 --   host -> client  world { g, n, base, ents, gone, lvl, pl, vt, cd, hash }
 --                   deltas on STATE, full snapshots (base 0) on RELIABLE
 --   host -> client  events { g, list }         one-off happenings (RELIABLE)
+-- Claims (core/level/claims.lua):
+--   client -> host  claim { g, c, k, id, d?, vx?, vy? }  c: the client's claim number
+--   host -> client  verdict { g, c, ok, n }    n: the first world snapshot showing it
 local wire = require("core.wire")
 local playersync = require("core.net.playersync")
+local claims = require("core.level.claims")
 
 local protocol = {}
 
@@ -180,7 +184,16 @@ local SHAPES = {
         g = isGeneration, a = isSeq,
         x = isOptionalCoordinate, y = isOptionalCoordinate, vx = isOptionalCoordinate, vy = isOptionalCoordinate,
         sx = isOptionalCoordinate, sy = isOptionalCoordinate,
+        kb = function(v) return v == nil or (type(v) == "number" and v >= 0 and v <= 5) end,
     },
+    claim = {
+        g = isGeneration, c = isSeq,
+        k = function(v) return claims.KINDS[v] == true end,
+        id = function(v) return isInt(v, 1, MAX_ENTITY_ID) end,
+        d = function(v) return v == nil or v == 1 or v == -1 end,
+        vx = isOptionalCoordinate, vy = isOptionalCoordinate,
+    },
+    verdict = { g = isGeneration, c = isSeq, ok = function(v) return type(v) == "boolean" end, n = isSeq },
     world = {
         g = isGeneration, n = isSeq, base = isSeq,
         ents = isEntityRecords,

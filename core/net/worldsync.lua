@@ -32,10 +32,12 @@ worldsync.EXTRAPOLATE = 0.1  -- s a body keeps moving without a new snapshot
 
 -- What a client's own step runs: its player against the world it was sent.
 -- Deaths by hazards, enemies and falling out are decided by the victim's
--- machine (NETWORKING.md, Interactions between owners).
+-- machine (NETWORKING.md, Interactions between owners); what it does to the
+-- world (stomps, kicks, breaking blocks, carrying) becomes claims
+-- (core/level/claims.lua), shown at once by the "claims" stage.
 worldsync.CLIENT_STAGES = {
-    input = true, players = true, collisions = true, hazards = true, enemyTouch = true,
-    bounds = true, playerAnimation = true,
+    input = true, players = true, collisions = true, hazards = true, breakBlocks = true, enemyTouch = true,
+    bounds = true, claims = true, playerAnimation = true,
 }
 
 -- One-off events the host forwards on the reliable channel. Player events
@@ -291,14 +293,55 @@ local function resolveFollow(level, follow)
     return "players"
 end
 
--- Make the level match a rebuilt state: entities created, updated and
--- removed, level state and players' `net` set. Run under script limits
--- (creating a spawned entity runs its type's script). `removed` collects
--- entities taken out (id -> entity), so late events can still show them.
-function worldsync.apply(level, state, removed)
+-- Put back an entity a claim took out here (the host denied it).
+local function restore(level, entity)
+    local list = level[loader.LIST_FOR_KIND[entity.kind]]
+    list[#list + 1] = entity
+    if entity.kind == "hazard" or entity.kind == "block" then
+        level.statics[#level.statics + 1] = entity
+    end
+    level.byId[entity.id] = entity
+    entity.removed, entity.brokenBy = nil, nil
+end
+
+-- Claims in flight (`pending`: entity id -> { until = snapshot number or
+-- nil, expires = time }): the claimed entity keeps this machine's version
+-- until a snapshot at or after the host's verdict arrives (or 3 s pass).
+function worldsync.settle(pending, n, now)
+    for id, entry in pairs(pending) do
+        if (entry["until"] and n >= entry["until"]) or now > entry.expires then
+            pending[id] = nil
+        end
+    end
+end
+
+-- Make the level match a rebuilt state: entities created, updated, restored
+-- and removed, level state and players' `net` set. Run under script limits
+-- (creating a spawned entity runs its type's script). Entities with a claim
+-- in flight (`pending`) and bodies a player carries keep this machine's
+-- version. Entities taken out go to `level.graveyard` (id -> entity), so a
+-- late event can still show them.
+function worldsync.apply(level, state, pending)
+    pending = pending or {}
+    level.graveyard = level.graveyard or {}
+    local carried = {}
+    for _, player in ipairs(level.players) do
+        if player.carrying then
+            carried[player.carrying] = true
+        end
+    end
     for id, list in pairs(state.entities) do
         local record = netstate.unpackEntity(list, extrasOf(level, list))
         local entity = level:get(id)
+        if not entity and not pending[id] and not record.spawnedType and level.graveyard[id] then
+            entity = level.graveyard[id] -- a claim here took it out; the host kept it
+            level.graveyard[id] = nil
+            restore(level, entity)
+        end
+        if pending[id] or (entity and carried[entity]) then
+            entity = nil -- this machine's version stands for now
+            goto continue
+        end
         local spawnedType = entity and entity.spawned and entity.typeName or nil
         if entity and spawnedType ~= record.spawnedType then
             level:removeEntity(entity) -- a different body under this id here: replace it
@@ -321,20 +364,24 @@ function worldsync.apply(level, state, removed)
             entity.killedBy, entity.detonated = nil, nil -- the host decides who is dead
             entity.syncAge = 0
             if entity.kind == "prop" then
-                entity.immovable = true -- the host moves props (claims: step 4)
+                entity.immovable = true -- the host moves props; this machine claims kicks
             end
         end
+        ::continue::
     end
     local gone = {}
     for id, entity in pairs(level.byId) do
-        if not state.entities[id] then
+        if not state.entities[id] and not pending[id] then
             gone[#gone + 1] = entity
         end
     end
     for _, entity in ipairs(gone) do
         level:removeEntity(entity)
-        if removed then
-            removed[entity.id] = entity
+        level.graveyard[entity.id] = entity
+    end
+    for _, player in ipairs(level.players) do
+        if player.carrying and player.carrying.removed then
+            player.carrying = nil -- the host took it out of the level
         end
     end
     local lvl = state.lvl
@@ -372,10 +419,14 @@ function worldsync.advance(level, delta)
 end
 
 -- A forwarded event as the client shows it: `entity` looked up by id here
--- (or among bodies a snapshot just removed).
-function worldsync.localEvent(level, event, removed)
+-- (or among bodies taken out). Nil when this machine already showed it (its
+-- own claim).
+function worldsync.localEvent(level, event)
     if event.id then
-        event.entity = level:get(event.id) or (removed and removed[event.id]) or nil
+        if level.shown and level.shown[event.id] and event.type ~= "sfx" and event.type ~= "message" then
+            return nil
+        end
+        event.entity = level:get(event.id) or (level.graveyard and level.graveyard[event.id]) or nil
     end
     return event
 end
