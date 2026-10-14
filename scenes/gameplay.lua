@@ -396,7 +396,7 @@ local function handleClaims()
             local vx = claim.vx and math.max(-playersync.MAX_COORD, math.min(playersync.MAX_COORD, claim.vx))
             local vy = claim.vy and math.max(-playersync.MAX_COORD, math.min(playersync.MAX_COORD, claim.vy))
             net:sendClaim({ t = "claim", g = generation, c = claimSeq, k = claim.k, id = claim.id,
-                d = claim.d and (claim.d < 0 and -1 or 1), vx = vx, vy = vy })
+                d = claim.d and (claim.d < 0 and -1 or 1), vx = vx, vy = vy, at = claim.at })
         elseif claim.k == "kickPlayer" then
             local ok, victim, direction = claims.judge(level, claim.player, claim)
             if ok and victim then

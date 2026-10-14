@@ -500,6 +500,50 @@ do
     check("kicking a remote player becomes a claim the host accepts", kick and kick.k == "kickPlayer"
         and kick.id == victim.id and ok and hit == victim and victim.vx == 0)
 
+    -- Head-bumping a brick from below on a client: the host judges with the
+    -- player as the client saw itself (its puppet has no movingUp or prevY).
+    local bumpLevel = Level.load("example", { seed = 3 })
+    bumpLevel.remoteWorld = true
+    local brick
+    for _, block in ipairs(bumpLevel.blocks) do
+        if block.typeName == "brick" then brick = block break end
+    end
+    local jumper = bumpLevel:addPlayer(playerModule.new(brick.x, brick.y + brick.h / 2 + 12 + 2))
+    jumper.vy, jumper.jumping, jumper.input = -300, true, { jump = true }
+    jumper.prevKeys.jump = true -- held, not a fresh press
+    local bump
+    for _ = 1, 6 do
+        bumpLevel:update(1 / 60, worldsync.CLIENT_STAGES)
+        for _, claim in ipairs(claims.take(bumpLevel)) do
+            if claim.k == "touchBlock" then bump = claim end
+        end
+    end
+    check("a client's head bump is claimed with its moment", bump and bump.id == brick.id and bump.at
+        and bumpLevel:get(brick.id) == nil)
+    local bumpHost = Level.load("example", { seed = 3 })
+    local bumpPuppet = bumpHost:addPlayer(playersync.makePuppet(playerModule.new(brick.x, brick.y + 30)))
+    local wire = protocol.decode(protocol.encode({ t = "claim", g = 1, c = 1, k = bump.k, id = bump.id, at = bump.at }),
+        1024)
+    check("the host accepts it though its own copy is not moving up", wire
+        and claims.judge(bumpHost, bumpPuppet, wire, { x = brick.x, y = brick.y + 30 }))
+    check("a moment far from where the host last heard of it is denied", not claims.judge(Level.load("example",
+        { seed = 3 }), bumpPuppet, wire, { x = brick.x + 300, y = brick.y }))
+
+    -- A puppet walking into a standing local player does not push it.
+    local pushLevel = Level.load("example", { seed = 3 })
+    local stander = pushLevel:addPlayer(playerModule.new(100, 240))
+    local walkerIn = pushLevel:addPlayer(playersync.makePuppet(playerModule.new(60, 240)))
+    for _ = 1, 30 do stander.input = {}; pushLevel:update(1 / 60) end
+    walkerIn.y = stander.y
+    local standX = stander.x
+    for i = 1, 20 do
+        walkerIn.x = 60 + i * 2 -- its owner walks it in (and on, into the local player)
+        stander.input = {}
+        pushLevel:update(1 / 60)
+    end
+    check("a puppet walking into a standing local player does not push it", stander.x == standX,
+        string.format("%.2f -> %.2f", standX, stander.x))
+
     local blastEvent = { type = "explosion", x = 100, y = 100, radius = 30 }
     check("each machine checks its own player against explosions", claims.caughtBy(playerModule.new(120, 100),
         blastEvent) and not claims.caughtBy(playerModule.new(200, 100), blastEvent))

@@ -134,6 +134,11 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 - **Step 6 status:** the bar ("5 instances play cleanly, playable at 150 ms / 5% loss, never desync or break the session") is met in these headless runs. It still needs people playing in real windows on one PC and on a LAN before Phase 2 is called done.
 - **Left in Phase 2:** carrying players online; checkpoints as the owner's claim (now host-noticed).
 
+### Fixes from the first play test (v0.1.9)
+- **Breaking blocks by head on a joiner** was always denied: the host ran the brick's `onTouch` with its own copy of the joiner, which is late and not simulated (no `movingUp`, no `prevY`). A claim now carries the claimer's moment (`at`: position, previous y, velocity, moving up / falling / jumping / facing); the host checks it is near where it last heard the claimer was, then runs the entity's hook with the player as the claimer saw itself. Protocol 5.
+- **A joiner could push the host's player** (not the other way round): on the host the joiner is an immovable puppet, so when it walked into the host's player the host's player was moved out. Now, side by side with a puppet, nothing pushes and nothing is pushed: only a local player walking into it is stopped; the puppet's own machine stops the puppet (`core/physics/collision.lua`). Standing on heads is unchanged.
+- Regression checks in `tests/sim/net.lua`; both fail on v0.1.8 and pass now.
+
 ## Next
 
 **Phase 2: LAN netcode over direct IP** (`NETWORKING.md`, Netcode). Model: each machine owns its own player's movement; the host owns the world and the session. Every machine has exactly one local player. Phase 2 is tested on one PC and a LAN; internet play without port forwarding is Phase 3.

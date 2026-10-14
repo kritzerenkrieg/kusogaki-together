@@ -192,6 +192,7 @@ local SHAPES = {
         id = function(v) return isInt(v, 1, MAX_ENTITY_ID) end,
         d = function(v) return v == nil or v == 1 or v == -1 end,
         vx = isOptionalCoordinate, vy = isOptionalCoordinate,
+        at = function(v) return v == nil or claims.validMoment(v) end,
     },
     verdict = { g = isGeneration, c = isSeq, ok = function(v) return type(v) == "boolean" end, n = isSeq },
     world = {
