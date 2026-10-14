@@ -102,3 +102,32 @@ do
     print(string.format("      full state: %d bytes (3 players, %d entities)", savedBytes, #level.enemies
         + #level.props + #level.blocks + #level.hazards + #level.triggers))
 end
+
+-- Corrections glide: a body moved by a host state is drawn from where it
+-- was, and reaches its new place over about 100 ms; a respawn-sized jump snaps.
+do
+    local interp = require("core.graphics.interp")
+    interp.clear()
+    local body = { x = 100, y = 50 }
+    interp.record({ body })
+    body.x = 130 -- the host's state put it here
+    interp.correct(body, 100, 50)
+    interp.apply({ body }, 0)
+    local drawnAt = body.x
+    interp.restore()
+    for _ = 1, 12 do interp.decay() end
+    interp.record({ body })
+    interp.apply({ body }, 0)
+    local later = body.x
+    interp.restore()
+    check("a corrected body is drawn from where it was, then glides", drawnAt == 100 and later > 125 and later < 130,
+        string.format("%.1f then %.1f", drawnAt, later))
+    local jumper = { x = 0, y = 0 }
+    interp.record({ jumper })
+    jumper.x = 500
+    interp.correct(jumper, 0, 0)
+    interp.apply({ jumper }, 0)
+    check("a correction as large as a respawn snaps", jumper.x == 500)
+    interp.restore()
+    interp.clear()
+end

@@ -11,7 +11,7 @@
 -- changing state on objects.
 --
 -- State: { rng, nextId, gravity, maxFall, net, finished, camera,
---          players = { [id] = fields }, order = { list name -> ids },
+--          players = { [id] = fields }, playerOrder = { ids }, order = { list name -> ids },
 --          statics = { "g<index>" or entity id ... }, entities = { [id] = fields } }
 local loader = require("core.level.loader")
 
@@ -97,9 +97,10 @@ fullstate.LISTS = LISTS
 
 -- Save the level's whole state.
 function fullstate.capture(level)
-    local players, entities, order = {}, {}, {}
-    for _, player in ipairs(level.players) do
+    local players, entities, order, playerOrder = {}, {}, {}, {}
+    for i, player in ipairs(level.players) do
         players[player.id] = fieldsOf(player)
+        playerOrder[i] = player.id
     end
     for _, name in ipairs(LISTS) do
         local ids = {}
@@ -133,6 +134,7 @@ function fullstate.capture(level)
         finished = level.finished and { outcome = level.finished.outcome, message = level.finished.message } or false,
         camera = camera,
         players = players,
+        playerOrder = playerOrder,
         entities = entities,
         order = order,
         statics = statics,
@@ -273,6 +275,16 @@ function fullstate.restore(level, state)
             setFields(level, player, fields)
         end
     end
+    -- Players in the saved order (it decides which pair collides first);
+    -- players the state does not know (just joined) keep their place after.
+    local rank = {}
+    for i, id in ipairs(state.playerOrder or {}) do
+        rank[id] = i
+    end
+    table.sort(level.players, function(a, b)
+        local ra, rb = rank[a.id] or (100 + a.id), rank[b.id] or (100 + b.id)
+        return ra < rb
+    end)
     level.events = {}
 end
 

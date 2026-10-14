@@ -47,8 +47,8 @@ end
 -- measured in pixels, so a wide static cannot throw a body sideways across the
 -- level. Bodies are never pushed downward (see staticExits).
 function staticContact.resolveBodyAgainstStatics(body, statics)
-    if body.held or body.immovable then
-        return -- a held body belongs to the player's collision; an immovable one to its owner
+    if body.held then
+        return -- a held body belongs to the player's collision, not its own
     end
     for _, static in ipairs(statics) do
         if geometry.overlaps(body, static) then

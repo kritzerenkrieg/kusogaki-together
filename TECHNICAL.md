@@ -87,8 +87,8 @@ The full design (engine prerequisites, level repository, lobby, connectivity, ne
 
 ## Authority and Security
 
-- Host is authoritative for the world and the session; each machine is authoritative for its own player's movement, with the host as referee (it can override with `setPlayer`).
-- Sync is never trusted to be perfect: every piece of state has one owner, updates are absolute and newest-wins, stale messages are dropped by generation and authority numbers, and world hashes detect drift. See `NETWORKING.md` (Source of truth).
+- Host is authoritative for everything in the level and the session: it simulates every player from their inputs (hybrid rollback). Clients predict and are corrected by the host's state.
+- Sync is never trusted to be perfect: states are deltas against what the client acknowledged, stale messages are dropped by generation, and a hash of the whole state detects drift. See `NETWORKING.md` (Source of truth).
 - Lua affecting gameplay runs in the authoritative simulation.
 - Community levels cannot run system code.
 - Native engine changes are separate from level content and need explicit install/trust.
@@ -97,6 +97,6 @@ The full design (engine prerequisites, level repository, lobby, connectivity, ne
 
 ## Simulation Requirements
 
-Fixed timestep · seeded deterministic RNG · stable entity IDs · host-owned world, owner-driven player movement · snapshot/delta sync · interpolation · small, fast packets (no session recording) · host migration · Lua execution limits. See `NETWORKING.md` → Engine prerequisites.
+Fixed timestep · seeded deterministic RNG · stable entity IDs · host-authoritative simulation with client prediction and rollback (whole-level save/restore) · state deltas with a hash · small, fast packets (no session recording) · host migration · Lua execution limits. See `NETWORKING.md` → Engine prerequisites.
 
 The design separates community extensibility from system authority: creators compose gameplay freely, while the engine, OS, and network boundaries stay controlled.

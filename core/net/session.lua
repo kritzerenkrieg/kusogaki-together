@@ -16,8 +16,7 @@ local session = {}
 local MAX_CLIENTS = protocol.MAX_PLAYERS - 1
 local TIMEOUT_MS = 5000      -- a peer silent this long is dropped (OPEN_DECISION C3)
 local HANDSHAKE_SECONDS = 5  -- a client must finish the handshake within this
-local MAX_STATES = 60        -- player states a client may send per second (20 expected)
-local MAX_CLAIMS = 60        -- claims a client may send per second
+local MAX_INPUTS = 120       -- input messages a client may send per second (60 expected)
 
 local function now()
     return love.timer.getTime()
@@ -125,8 +124,7 @@ Host.__index = Host
 --     welcome(id)         -> { seed, generation, players } once that client is in
 --     left(id)            a joined client left or timed out
 --     vote(id, on)        a joined client's player toggled its restart vote
---     state(id, message)  a joined client's player state (core/net/playersync.lua)
---     claim(id, message)  a joined client's claim (core/level/claims.lua)
+--     input(id, message)  a joined client's inputs (core/net/inputsync.lua)
 -- Returns the host, or nil and an error (port in use).
 function session.host(options)
     local address = (options.bind or "*") .. ":" .. (options.port or protocol.PORT)
@@ -185,26 +183,15 @@ local function hostReceive(self, entry, data)
         self:broadcast({ t = "joined", id = id }, id)
     elseif entry.stage == "joined" and message.t == "vote" then
         self.handler.vote(entry.id, message.on)
-    elseif entry.stage == "joined" and message.t == "state" then
-        -- At most MAX_STATES a second; extras are dropped (newest wins anyway).
+    elseif entry.stage == "joined" and message.t == "input" then
+        -- At most MAX_INPUTS a second; extras are dropped (each repeats the last ticks).
         local second = math.floor(now())
         if entry.second ~= second then
-            entry.second, entry.states = second, 0
+            entry.second, entry.inputs = second, 0
         end
-        entry.states = entry.states + 1
-        if entry.states <= MAX_STATES then
-            self.handler.state(entry.id, message)
-        end
-    elseif entry.stage == "joined" and message.t == "claim" then
-        local second = math.floor(now())
-        if entry.claimSecond ~= second then
-            entry.claimSecond, entry.claims = second, 0
-        end
-        entry.claims = entry.claims + 1
-        if entry.claims <= MAX_CLAIMS then
-            self.handler.claim(entry.id, message)
-        else -- answered, so the client does not wait on it
-            send(entry.peer, { t = "verdict", g = message.g, c = message.c, ok = false, n = 0 }, protocol.RELIABLE)
+        entry.inputs = entry.inputs + 1
+        if entry.inputs <= MAX_INPUTS then
+            self.handler.input(entry.id, message)
         end
     elseif message.t == "reject" then
         entry.peer:disconnect_later()
@@ -255,16 +242,6 @@ function Host:broadcast(message, exceptId)
     for _, entry in pairs(self.peers) do
         if entry.stage == "joined" and entry.id ~= exceptId then
             send(entry.peer, message, protocol.RELIABLE)
-        end
-    end
-end
-
--- Send unreliable state (players) to every joined client: newest wins, so a
--- lost one is simply replaced by the next.
-function Host:broadcastState(message)
-    for _, entry in pairs(self.peers) do
-        if entry.stage == "joined" then
-            send(entry.peer, message, protocol.STATE)
         end
     end
 end
@@ -320,12 +297,9 @@ Client.__index = Client
 --   level(name, fingerprint) -> true when this machine has that level (else
 --                               false and a reason)
 --   welcome(message)           joined: { you, seed, generation, players }
---   world(message), events(message)  the host's world (core/net/worldsync.lua)
---   verdict(message)           the host's answer to one of this machine's claims
 --   restart(message)           { seed, generation, players }
 --   joined(id), left(id)       another player came or went
---   players(message)           the other players' states { g, list }
---   setPlayer(message)         the host overrides this machine's player
+--   snap(message)              the host's state (core/net/statesync.lua)
 --   closed(reason)             the session ended (refused, host gone, timeout)
 -- Returns the client, or nil and an error.
 function session.join(address, handler)
@@ -369,10 +343,7 @@ end
 local CLIENT_EXPECTS = {
     hello = { level = true },
     ready = { welcome = true },
-    joined = {
-        restart = true, joined = true, left = true, players = true, setPlayer = true, world = true, events = true,
-        verdict = true,
-    },
+    joined = { restart = true, joined = true, left = true, snap = true },
 }
 
 local function clientReceive(self, data)
@@ -405,7 +376,7 @@ local function clientReceive(self, data)
     elseif message.t == "joined" or message.t == "left" then
         self.handler[message.t](message.id)
     else
-        self.handler[message.t](message) -- restart, players, setPlayer, world, events, verdict
+        self.handler[message.t](message) -- restart, snap
     end
 end
 
@@ -438,18 +409,18 @@ function Client:vote(on)
     end
 end
 
--- Send this machine's player state { g, s, a, p, e } (unreliable).
-function Client:sendState(message)
+-- Send this machine's inputs { g, n, f, k } (unreliable; each repeats the
+-- last ticks).
+function Client:sendInput(message)
     if self.stage == "joined" then
         send(self.peer, message, protocol.STATE)
     end
 end
 
--- Send a claim (reliable, in order).
-function Client:sendClaim(message)
-    if self.stage == "joined" then
-        send(self.peer, message, protocol.RELIABLE)
-    end
+-- Round trip to the host in seconds (ENet's estimate).
+function Client:roundTrip()
+    local ok, ms = pcall(self.peer.round_trip_time, self.peer)
+    return (ok and tonumber(ms) or 100) / 1000 + emulation.lag
 end
 
 -- Leave the session.

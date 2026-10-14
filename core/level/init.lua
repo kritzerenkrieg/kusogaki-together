@@ -230,15 +230,14 @@ function Level:protect(fn, ...)
 end
 
 -- One simulation step. Each player reads its own `input` frame, set by the
--- scene before the step. `only` (a set of stage names) runs just those
--- stages: a network client runs its own player's (core/net/worldsync.lua).
--- Returns false (and does nothing) once faulted or finished.
-function Level:update(delta, only)
+-- scene before the step. Returns false (and does nothing) once faulted or
+-- finished.
+function Level:update(delta)
     if self.faulted or self.finished then
         return false
     end
     events.begin(self.events)
-    local ok = self:protect(stages.run, self, delta, only)
+    local ok = self:protect(stages.run, self, delta)
     events.finish()
     return ok
 end

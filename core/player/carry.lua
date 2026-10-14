@@ -4,7 +4,6 @@
 local physics = require("core.physics")
 local config = require("core.player.config")
 local state = require("core.player.state")
-local claims = require("core.level.claims")
 
 local CONFIG = config.CONFIG
 local HAND_OVERLAP = 4 -- px the held prop overlaps the player's facing edge
@@ -25,7 +24,7 @@ end
 -- (no carry chains).
 local function grabbable(self, body)
     if body.isPlayer then
-        return body ~= self and not body.remote and not body.dead and not body.held and not body.carrying
+        return body ~= self and not body.dead and not body.held and not body.carrying
     end
     return not body.held and not body.killedBy
 end
@@ -103,18 +102,11 @@ function carry.update(self, edges, level)
                 target.heldBy = self
                 target.onGround = false
             end
-            if not target.isPlayer then
-                claims.note(level, { k = "grab", id = target.id, player = self })
-            end
             state.emit(self, "grab")
         end
     end
     if edges.holdReleased and self.carrying then
-        local dropped = self.carrying
         release(self, self.facing * 30, 0, level.statics) -- gentle drop
-        if not dropped.isPlayer then
-            claims.note(level, { k = "drop", id = dropped.id, vx = dropped.vx, vy = dropped.vy, player = self })
-        end
         state.emit(self, "drop")
     end
 end

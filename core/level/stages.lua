@@ -10,7 +10,6 @@ local blocks = require("core.level.blocks")
 local bounds = require("core.level.bounds")
 local props = require("core.level.props")
 local triggers = require("core.level.triggers")
-local claims = require("core.level.claims")
 
 local stages = {}
 
@@ -52,23 +51,8 @@ local function readInput(level)
     end
 end
 
--- Players this machine simulates: all but puppets (`remote`: another
--- machine plays them, core/net/playersync.lua). Rules that change a player
--- (deaths, stomps, falling out) run on its owner's machine only; rules that
--- only read players (enemies waking, triggers) see everyone.
-function stages.simulated(level)
-    local list = {}
-    for _, player in ipairs(level.players) do
-        if not player.remote then
-            list[#list + 1] = player
-        end
-    end
-    return list
-end
-local simulated = stages.simulated
-
 local function updatePlayers(level, delta)
-    for _, player in ipairs(simulated(level)) do
+    for _, player in ipairs(level.players) do
         local controller = customUpdate(level, player)
         if controller then
             controller.update(player, delta, level)
@@ -100,7 +84,7 @@ local function updateProps(level, delta)
 end
 
 local function refreshPlayers(level)
-    for _, player in ipairs(simulated(level)) do
+    for _, player in ipairs(level.players) do
         if not customUpdate(level, player) then
             player:refreshAnimationState()
         end
@@ -122,13 +106,12 @@ local DEFAULT_STAGES = {
     { "animateBlocks", function(level, delta) blocks.animate(level, delta) end },
     { "collisions", function(level) physics.resolveBodyCollisions(dynamicBodies(level), level.statics) end },
     { "triggers", function(level) triggers.touch(level, level.players) end },
-    { "hazards", function(level) blocks.touchHazards(level, simulated(level)) end },
-    { "breakBlocks", function(level) blocks.breakTouched(level, simulated(level)) end },
-    { "enemyTouch", function(level) enemies.touchPlayers(level, simulated(level)) end },
-    { "detonations", function(level) props.removeDetonated(level, simulated(level)) end },
-    { "enemyDeaths", function(level) enemies.removeDead(level, simulated(level)) end },
-    { "bounds", function(level) bounds.removeFallen(level, simulated(level)) end },
-    { "claims", function(level) claims.predict(level) end }, -- network clients show their claims at once
+    { "hazards", function(level) blocks.touchHazards(level, level.players) end },
+    { "breakBlocks", function(level) blocks.breakTouched(level, level.players) end },
+    { "enemyTouch", function(level) enemies.touchPlayers(level, level.players) end },
+    { "detonations", function(level) props.removeDetonated(level, level.players) end },
+    { "enemyDeaths", function(level) enemies.removeDead(level, level.players) end },
+    { "bounds", function(level) bounds.removeFallen(level, level.players) end },
     { "playerAnimation", refreshPlayers },
     { "scripts", runScripts },
 }
@@ -198,14 +181,11 @@ function stages.replace(level, name, run)
 end
 
 -- One step: every stage in order (a copy of the list, so a stage may change
--- it safely), or only those named in the set `only`. Finishing the level ends
--- the step.
-function stages.run(level, delta, only)
+-- it safely). Finishing the level ends the step.
+function stages.run(level, delta)
     local list = {}
-    for _, stage in ipairs(level.stages) do
-        if not only or only[stage.name] then
-            list[#list + 1] = stage
-        end
+    for i, stage in ipairs(level.stages) do
+        list[i] = stage
     end
     for _, stage in ipairs(list) do
         stage.run(level, delta)

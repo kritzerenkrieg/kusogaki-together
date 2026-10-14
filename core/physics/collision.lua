@@ -69,14 +69,6 @@ function collision.resolveBodyCollision(a, b, restitution, bodies, statics)
 
     local dx, dy = b.x - a.x, b.y - a.y
     local player, platform = oneway.playerPair(a, b)
-    if player and player.immovable then
-        if not geometry.pushesHorizontally(a, b) then
-            return false -- a puppet on top stands where its owner says; nothing here moves
-        end
-        -- Side by side (playerPair picks a "top" one even at the same height):
-        -- the puppet rule below decides.
-        player, platform = nil, nil
-    end
     if player and oneway.tryLanding(player, platform, bodies) then
         return true
     end
@@ -88,18 +80,6 @@ function collision.resolveBodyCollision(a, b, restitution, bodies, statics)
     end
 
     local normalX, normalY, penetration = contactNormal(a, b, dx, dy, overlapX, overlapY)
-    -- Side by side with a puppet (another machine's player, immovable here):
-    -- nothing pushes and nothing is pushed. Only a local player walking into
-    -- it is stopped; anything else passes, and the puppet's own machine stops
-    -- the puppet (each machine sees the other a little late, so these
-    -- overlaps happen).
-    if normalX ~= 0 and (a.immovable and a.isPlayer or b.immovable and b.isPlayer) then
-        local puppet, other = a.immovable and a or b, a.immovable and b or a
-        local towardPuppet = puppet.x >= other.x and 1 or -1
-        if not other.isPlayer or other.immovable or (other.vx or 0) * towardPuppet <= 0 then
-            return false
-        end
-    end
     local inverseA, inverseB = mass.inverse(a), mass.inverse(b)
     local inverseMassTotal = inverseA + inverseB
     if inverseMassTotal == 0 then

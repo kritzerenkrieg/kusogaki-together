@@ -14,22 +14,17 @@
 -- Session messages afterwards: restart, joined, left (host -> clients);
 -- vote (client -> host: its player's restart vote).
 --
--- Player state (core/net/playersync.lua), every message stamped with the
--- level generation g:
---   client -> host  state { g, s, a, p, e, k }  own player, k: newest world
---                                               snapshot it has (channel STATE, 20 Hz)
---   host -> client  players { g, list }        { id, s, p, e } per player (STATE)
---   host -> client  setPlayer { g, a, x?, y?, vx?, vy?, sx?, sy? }  override (RELIABLE)
--- World (core/net/worldsync.lua):
---   host -> client  world { g, n, base, ents, gone, lvl, pl, vt, cd, hash }
---                   deltas on STATE, full snapshots (base 0) on RELIABLE
---   host -> client  events { g, list }         one-off happenings (RELIABLE)
--- Claims (core/level/claims.lua):
---   client -> host  claim { g, c, k, id, d?, vx?, vy? }  c: the client's claim number
---   host -> client  verdict { g, c, ok, n }    n: the first world snapshot showing it
+-- Hybrid rollback (NETWORKING.md), every message stamped with the level
+-- generation g:
+--   client -> host  input { g, n, f }   input masks for ticks n-#f+1..n, 60 a
+--                                       second (channel STATE; core/net/inputsync.lua)
+--   host -> client  snap { g, h, base, set, del, hash, ack, inp, vt, cd }
+--                   the host's state after tick h, a delta against the one the
+--                   client acknowledged (STATE) or full (base 0, RELIABLE);
+--                   core/net/statesync.lua
+-- A client acknowledges states in its input messages (k).
 local wire = require("core.wire")
-local playersync = require("core.net.playersync")
-local claims = require("core.level.claims")
+local inputsync = require("core.net.inputsync")
 
 local protocol = {}
 
@@ -69,87 +64,61 @@ local function isPlayerList(value)
 end
 
 local isGeneration = function(value) return isInt(value, 0, 2 ^ 31) end
-local isSeq = function(value) return isInt(value, 0, playersync.MAX_SEQ) end
-
-local function isCoordinate(value)
-    return type(value) == "number" and value == value and math.abs(value) <= playersync.MAX_COORD
-end
-
-local function isOptionalCoordinate(value)
-    return value == nil or isCoordinate(value)
-end
+local isSeq = function(value) return isInt(value, 0, 2 ^ 31) end
 
 local function isList(value, maxLength)
     return type(value) == "table" and #value <= maxLength and next(value, #value > 0 and #value or nil) == nil
 end
 
-local function isIdList(value, low, high, maxLength)
-    if not isList(value, maxLength) then
+local MAX_KEYS = 100000
+
+-- snap.set: { key, value } pairs; values are plain by construction
+-- (core/wire.lua decodes nothing else).
+local function isSets(value)
+    if not isList(value, MAX_KEYS) then
         return false
     end
-    for _, id in ipairs(value) do
-        if not isInt(id, low, high) then
+    for _, entry in ipairs(value) do
+        if type(entry) ~= "table" or type(entry[1]) ~= "string" or #entry[1] > 96 then
             return false
         end
     end
     return true
 end
 
-local MAX_ENTITY_ID = 2 ^ 24
-local MAX_ENTITIES = 20000
-
--- world.ents: entity records, each a list starting with its id. Values are
--- plain by construction (core/wire.lua decodes nothing else); worldsync
--- checks positions before using them.
-local function isEntityRecords(value)
-    if not isList(value, MAX_ENTITIES) then
+local function isKeys(value)
+    if not isList(value, MAX_KEYS) then
         return false
     end
-    for _, list in ipairs(value) do
-        if type(list) ~= "table" or #list < 2 or #list > 64 or not isInt(list[1], 1, MAX_ENTITY_ID) then
+    for _, key in ipairs(value) do
+        if type(key) ~= "string" or #key > 96 then
             return false
         end
     end
     return true
 end
 
-local function isPlayerNets(value)
+local function isInputs(value)
     if not isList(value, protocol.MAX_PLAYERS) then
         return false
     end
     for _, entry in ipairs(value) do
-        if type(entry) ~= "table" or not isInt(entry[1], 1, protocol.MAX_PLAYERS) or type(entry[2]) ~= "table" then
+        if type(entry) ~= "table" or not isInt(entry[1], 1, protocol.MAX_PLAYERS)
+            or not isInt(entry[2], 0, 2 ^ 24 - 1) then
             return false
         end
     end
     return true
 end
 
-local function isEvents(value)
-    if not isList(value, 256) then
+local function isIdList(value)
+    if not isList(value, protocol.MAX_PLAYERS) then
         return false
     end
-    for _, event in ipairs(value) do
-        if type(event) ~= "table" or type(event.type) ~= "string" then
+    for _, id in ipairs(value) do
+        if not isInt(id, 1, protocol.MAX_PLAYERS) then
             return false
         end
-    end
-    return true
-end
-
--- players.list: at most MAX_PLAYERS entries { id, s, p, e }, ids unique.
-local function isPlayerStates(value)
-    if type(value) ~= "table" or #value > protocol.MAX_PLAYERS or next(value, #value > 0 and #value or nil) ~= nil then
-        return false
-    end
-    local seen = {}
-    for _, entry in ipairs(value) do
-        if type(entry) ~= "table" or #entry ~= 4 or next(entry, 4) ~= nil
-            or not isInt(entry[1], 1, protocol.MAX_PLAYERS) or seen[entry[1]]
-            or not isSeq(entry[2]) or not playersync.valid(entry[3]) or not playersync.validEvents(entry[4]) then
-            return false
-        end
-        seen[entry[1]] = true
     end
     return true
 end
@@ -175,37 +144,13 @@ local SHAPES = {
     joined = { id = function(v) return isInt(v, 1, protocol.MAX_PLAYERS) end },
     vote = { on = function(v) return type(v) == "boolean" end },
     left = { id = function(v) return isInt(v, 1, protocol.MAX_PLAYERS) end },
-    state = {
-        g = isGeneration, s = isSeq, a = isSeq, p = playersync.valid, e = playersync.validEvents,
-        k = isSeq,
-    },
-    players = { g = isGeneration, list = isPlayerStates },
-    setPlayer = {
-        g = isGeneration, a = isSeq,
-        x = isOptionalCoordinate, y = isOptionalCoordinate, vx = isOptionalCoordinate, vy = isOptionalCoordinate,
-        sx = isOptionalCoordinate, sy = isOptionalCoordinate,
-        kb = function(v) return v == nil or (type(v) == "number" and v >= 0 and v <= 5) end,
-    },
-    claim = {
-        g = isGeneration, c = isSeq,
-        k = function(v) return claims.KINDS[v] == true end,
-        id = function(v) return isInt(v, 1, MAX_ENTITY_ID) end,
-        d = function(v) return v == nil or v == 1 or v == -1 end,
-        vx = isOptionalCoordinate, vy = isOptionalCoordinate,
-        at = function(v) return v == nil or claims.validMoment(v) end,
-    },
-    verdict = { g = isGeneration, c = isSeq, ok = function(v) return type(v) == "boolean" end, n = isSeq },
-    world = {
-        g = isGeneration, n = isSeq, base = isSeq,
-        ents = isEntityRecords,
-        gone = function(v) return isIdList(v, 1, MAX_ENTITY_ID, MAX_ENTITIES) end,
-        lvl = function(v) return v == false or type(v) == "table" end,
-        pl = isPlayerNets,
-        vt = function(v) return isIdList(v, 1, protocol.MAX_PLAYERS, protocol.MAX_PLAYERS) end,
-        cd = function(v) return v == false or (type(v) == "number" and v >= 0 and v <= 60) end,
+    input = { g = isGeneration, n = isSeq, f = inputsync.validMasks, k = isSeq },
+    snap = {
+        g = isGeneration, h = isSeq, base = isSeq, set = isSets, del = isKeys,
         hash = function(v) return type(v) == "string" and #v == 16 and v:match("^%x+$") ~= nil end,
+        ack = isSeq, inp = isInputs, vt = isIdList,
+        cd = function(v) return v == false or (type(v) == "number" and v >= 0 and v <= 60) end,
     },
-    events = { g = isGeneration, list = isEvents },
 }
 
 -- Encode a message; raises on a malformed one (that is an engine bug).

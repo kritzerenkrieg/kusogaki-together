@@ -21,15 +21,13 @@
 -- through gameplay.restart(seed). Player ids stay stable for the session, so
 -- remote players keep theirs across restarts.
 --
--- Player state (step 2, core/net/playersync.lua): each machine owns its own
--- player and sends its state 20 times a second; the host checks it and
--- forwards everyone's to everyone. Other machines' players are puppets here.
---
--- World (step 3, core/net/worldsync.lua): the host runs the world (every
--- rule, entity and level script) and sends each client snapshot deltas and
--- one-off events; a client runs only its own player's stages against that
--- world (level.remoteWorld) and draws. A host script that changes a remote
--- player sends that player's machine a setPlayer by itself.
+-- Hybrid rollback: clients send their inputs every tick
+-- (core/net/inputsync.lua); the host simulates every player and the world
+-- and sends its whole state 20 times a second (core/net/statesync.lua,
+-- core/level/fullstate.lua). A client runs ahead of the host, predicting
+-- with its own inputs and the others' last known ones; when a host state
+-- arrives it restores it and replays its inputs since. Effects and sounds
+-- play once per tick and event, not again in a replay.
 local sceneEngine = require("core.scenes")
 local fx = require("core.graphics.fx")
 local camera = require("core.graphics.camera")
@@ -44,12 +42,11 @@ local present = require("core.graphics.present")
 local render = require("core.graphics.render")
 local text = require("core.text")
 local loader = require("core.level.loader")
-local netstate = require("core.level.netstate")
 local levelpack = require("core.levelpack")
 local session = require("core.net.session")
-local playersync = require("core.net.playersync")
-local worldsync = require("core.net.worldsync")
-local claims = require("core.level.claims")
+local inputsync = require("core.net.inputsync")
+local statesync = require("core.net.statesync")
+local fullstate = require("core.level.fullstate")
 local script = require("core.script")
 local watchdog = require("core.watchdog")
 
@@ -96,15 +93,14 @@ local generation = 0        -- the level's (re)start number; messages from older
 
 local net = nil             -- the network session (core/net/session.lua), if any
 local netStatus = nil       -- what to tell the player about the session ("connecting", a reason)
-local owner = playersync.owner() -- this machine's player: send sequence and authority
-local remoteSync = {}       -- host: id -> playersync.remote(); client: id -> newest sequence
-local hostSends = {}        -- host: reliable messages for one client { id, message } (setPlayer)
-local world = nil           -- host: worldsync.host(); client: worldsync.client()
-local worldEvents = {}      -- host: events for the clients since the last send
-local pendingSet = {}       -- host: id -> changes a script made to that remote player
-local pending = {}          -- client: entity id -> claim in flight (core/net/worldsync.lua settle)
-local inflight = {}         -- client: claim number -> claim, until the host's verdict
-local claimSeq = 0          -- client: claims sent this session
+local states = nil          -- host: statesync.host(); client: statesync.client()
+local inputs = nil          -- host: inputsync.host(); client: inputsync.client() (its own)
+local remoteMasks = {}      -- client: id -> the input the host last used for that player
+local predicting = false    -- client: has a host state and runs ahead of it
+local margin = nil          -- client: how many ticks early its inputs reach the host (smoothed)
+local presented = {}        -- client: tick -> event signatures already shown
+local predicted = {}        -- client: tick -> its predicted state then (flat), for ticks the host sends
+local SEND_EVERY = 3        -- host ticks between states (20 a second)
 local NET_PORT, NET_BIND = nil, nil -- tests host on another port and address
 
 local MAX_SEED = 2147483646 -- seeds are 1..MAX_SEED (the MINSTD generator's range)
@@ -146,12 +142,8 @@ local function freeId()
 end
 
 -- Add a player with id `id` at (x, y); that point is also its respawn point.
--- Another machine's player is a puppet (core/net/playersync.lua).
 local function spawn(x, y, id)
     local player = playerModule.new(x, y)
-    if remoteIds[id] then
-        playersync.makePuppet(player)
-    end
     level:addPlayer(player, id)
     return player
 end
@@ -202,14 +194,11 @@ local function buildLevel(seed)
         end
     end
     if NET_MODE == "host" then
-        for _, record in pairs(remoteSync) do
-            record.last, record.forward = nil, nil -- a new level: no previous position
-        end
-        worldsync.reset(world) -- every client gets a full snapshot of the new level
-        worldEvents, pendingSet = {}, {}
+        statesync.reset(states) -- every client gets a full state of the new level
+        inputsync.reset(inputs) -- tick numbers start again
     elseif NET_MODE == "client" then
-        level.remoteWorld = true -- the host owns the world; this machine runs its player
-        world, pending, inflight = worldsync.client(), {}, {}
+        states, inputs = statesync.client(), inputsync.client()
+        remoteMasks, predicting, margin, presented, predicted = {}, false, nil, {}, {}
     end
     votes, countdown = {}, nil
     tick = 0
@@ -351,59 +340,29 @@ end
 
 -- ── Network play ──────────────────────────────────────────────────────────
 
--- Sounds for another machine's player events (they arrive with its state).
-local function presentRemoteEvents(id, names, puppet)
-    local list = {}
-    for i, name in ipairs(names) do
-        list[i] = { type = "player", name = name, player = id, x = puppet.x, y = puppet.y }
-    end
-    level:protect(present.all, list, level, localIds())
+-- An event's identity within its tick, so a replay shows only what is new.
+local function signature(event)
+    return ("%s:%s:%s:%s"):format(event.type, tostring(event.id), tostring(event.player), tostring(event.name))
 end
 
--- Host: a kick claim hit `victim`: its own machine applies the knock.
-local function knock(victim, direction)
-    if not victim.remote then
-        claims.knock(victim, direction)
-        return
+-- Show a tick's events, except those already shown for that tick (a replay
+-- produces most of them again).
+local function presentOnce(t, events)
+    local seen = presented[t]
+    if not seen then
+        seen = {}
+        presented[t] = seen
+        presented[t - 240] = nil
     end
-    local record = remoteSync[victim.id]
-    if record then
-        local message = playersync.overrideMessage(record, {
-            vx = direction * playerModule.CONFIG.playerKickPush,
-            vy = playerModule.CONFIG.playerKickLift,
-            kb = playerModule.CONFIG.knockbackTime,
-        })
-        message.g = generation
-        hostSends[#hostSends + 1] = { id = victim.id, message = message }
-    end
-end
-
--- This step's claims: a client sends them (its world changes stay pending
--- until the host's verdict); the host judges its own player's kicks on other
--- machines' players.
-local function handleClaims()
-    local list = claims.take(level)
-    if not net then
-        return
-    end
-    for _, claim in ipairs(list) do
-        if NET_MODE == "client" then
-            claimSeq = claimSeq + 1
-            inflight[claimSeq] = claim
-            if claim.k ~= "kickPlayer" then
-                pending[claim.id] = { expires = love.timer.getTime() + 3 }
-            end
-            local vx = claim.vx and math.max(-playersync.MAX_COORD, math.min(playersync.MAX_COORD, claim.vx))
-            local vy = claim.vy and math.max(-playersync.MAX_COORD, math.min(playersync.MAX_COORD, claim.vy))
-            net:sendClaim({ t = "claim", g = generation, c = claimSeq, k = claim.k, id = claim.id,
-                d = claim.d and (claim.d < 0 and -1 or 1), vx = vx, vy = vy, at = claim.at })
-        elseif claim.k == "kickPlayer" then
-            local ok, victim, direction = claims.judge(level, claim.player, claim)
-            if ok and victim then
-                knock(victim, direction)
-            end
+    local fresh = {}
+    for _, event in ipairs(events) do
+        local key = signature(event)
+        if not seen[key] then
+            seen[key] = true
+            fresh[#fresh + 1] = event
         end
     end
+    level:protect(present.all, fresh, level, localIds())
 end
 
 -- The host's side of the session (core/net/session.lua handler).
@@ -416,26 +375,20 @@ local hostHandler = {
         return id
     end,
     -- A client finished the handshake: its player joins at the host's latest
-    -- checkpoint (the host player's respawn point).
+    -- checkpoint (the host player's respawn point); its machine learns where
+    -- from the host's state.
     welcome = function(id)
         remoteIds[id] = true
-        remoteSync[id] = playersync.remote()
         local hostPlayer = slots[1].player
-        local x, y = hostPlayer.spawnX, hostPlayer.spawnY
-        spawn(x, y, id)
-        -- Its machine builds the level at the start; move it to the checkpoint
-        -- (sent after the welcome, on the same reliable channel).
-        local place = playersync.place(remoteSync[id], x, y)
-        place.g = generation
-        hostSends[#hostSends + 1] = { id = id, message = place }
-        worldsync.addClient(world, id) -- a full snapshot at the next send
+        spawn(hostPlayer.spawnX, hostPlayer.spawnY, id)
+        inputsync.addPlayer(inputs, id)
+        statesync.addClient(states, id) -- a full state at the next send
         return { seed = level.seed, generation = generation, players = sessionIds() }
     end,
     left = function(id)
         remoteIds[id] = nil
-        remoteSync[id] = nil
-        pendingSet[id] = nil
-        worldsync.removeClient(world, id)
+        inputsync.removePlayer(inputs, id)
+        statesync.removeClient(states, id)
         local player = playerWithId(id)
         if player then
             removePlayer(player)
@@ -446,42 +399,75 @@ local hostHandler = {
             votes[id] = on or nil
         end
     end,
-    -- A client's claim: judged with the same entity hooks the rules use, and
-    -- answered with the snapshot number that will show the outcome.
-    claim = function(id, message)
-        local puppet = playerWithId(id)
-        local ok, victim, direction = false, nil, nil
-        if message.g == generation and puppet and puppet.remote then
-            level:protect(function()
-                ok, victim, direction = claims.judge(level, puppet, message, remoteSync[id] and remoteSync[id].last)
-            end)
-        end
-        hostSends[#hostSends + 1] = { id = id, message = { t = "verdict", g = message.g, c = message.c,
-            ok = ok == true, n = world.n + 1 } }
-        if ok and victim then
-            knock(victim, direction)
-        end
-    end,
-    -- A client's player state: newest wins; the referee refuses the clearly
-    -- impossible and puts the player back with a setPlayer.
-    state = function(id, message)
-        local puppet, record = playerWithId(id), remoteSync[id]
-        if message.g ~= generation or not puppet or not record then
-            return -- from another level generation, or a player not in this level
-        end
-        if message.s > record.seq then
-            worldsync.acknowledge(world, id, message.k) -- the newest world snapshot it has
-        end
-        local result = playersync.receive(record, message, puppet, level, love.timer.getTime())
-        if result == "refused" then
-            local correction = playersync.correction(record, puppet)
-            correction.g = generation
-            hostSends[#hostSends + 1] = { id = id, message = correction }
-            playersync.hold(puppet) -- it waits where the correction puts its owner
-            puppet.x, puppet.y = correction.x, correction.y
+    -- A client's inputs (and the newest host state it has).
+    input = function(id, message)
+        if message.g == generation then
+            inputsync.receive(inputs, id, message, tick)
+            statesync.acknowledge(states, id, message.k)
         end
     end,
 }
+
+-- Client: run one tick `t` of the level with this machine's input for it
+-- and the others' last known inputs, and show what is new in it.
+local function simulate(t, step)
+    local names = level.actionNames
+    for _, player in ipairs(level.players) do
+        if player == slots[1].player then
+            player.input = input.unpack(inputsync.maskAt(inputs, t), names)
+        else
+            player.input = input.unpack(remoteMasks[player.id] or 0, names)
+        end
+    end
+    level:update(step)
+    tick = t
+    presentOnce(t, level:takeEvents())
+    if t % SEND_EVERY == 0 then -- the host sends its state after these ticks: remember ours
+        local ok, state = pcall(fullstate.capture, level)
+        predicted[t] = ok and statesync.flatten(state) or nil
+        predicted[t - 120] = nil
+    end
+end
+
+-- Client: a host state after tick h. The first one starts prediction a
+-- round trip and a little ahead of it. A later one that matches what this
+-- machine predicted for tick h changes nothing; otherwise it replaces the
+-- prediction for tick h and the ticks since are replayed with this
+-- machine's inputs.
+local function reconcile(state, h, flat)
+    if predicting and predicted[h] and statesync.same(predicted[h], flat) then
+        return -- predicted right
+    end
+    local now = tick
+    local before = {}
+    for _, body in ipairs(movingBodies()) do
+        before[body] = { body.x, body.y }
+    end
+    local ok = level:protect(fullstate.restore, level, state)
+    if not ok then
+        return
+    end
+    tick = h
+    local target
+    if not predicting then
+        -- A round trip ahead plus the cushion, so its inputs reach the host in
+        -- time; the lead control (clientRate) fine-tunes it. ENet's first
+        -- round-trip estimates run high, hence the cap.
+        target = h + math.ceil(math.min(net:roundTrip(), 0.5) * 60) + inputsync.TARGET_LEAD
+        predicting = true
+    else
+        target = math.max(now, h)
+    end
+    for t = h + 1, target do
+        simulate(t, clock.step)
+    end
+    for _, body in ipairs(movingBodies()) do
+        local was = before[body]
+        if was then
+            interp.correct(body, was[1], was[2]) -- glide from the prediction to the host's truth
+        end
+    end
+end
 
 -- The client's side of the session.
 local pendingLevel -- the level name the host announced, until its welcome
@@ -508,62 +494,31 @@ local clientHandler = {
             end
         end
         generation = message.generation
-        owner, remoteSync = playersync.owner(), {}
         gameplay.restart(message.seed)
         netStatus = nil
     end,
-    -- The host's world: a snapshot delta (or a full one). Newer ones are
-    -- applied to the level; the restart votes come with it.
-    world = function(message)
+    -- The host's state after its tick h: restore it and replay since.
+    snap = function(message)
         if message.g ~= generation or not level then
             return
         end
-        local state = worldsync.receive(world, message)
-        if state then
-            worldsync.settle(pending, state.n, love.timer.getTime())
-            level:protect(worldsync.apply, level, state, pending, world.clock, love.timer.getTime())
-            votes = {}
-            for _, id in ipairs(message.vt) do
-                votes[id] = true
-            end
-            countdown = message.cd or nil
-        end
-    end,
-    -- One-off happenings in the host's world: debris, explosions, corpses,
-    -- sounds and level scripts' messages.
-    events = function(message)
-        if message.g ~= generation or not level then
+        local state, h, flat = statesync.receive(states, message)
+        if not state then
             return
         end
-        local list = {}
-        local own = slots[1].player
-        for _, event in ipairs(message.list) do
-            if event.type == "explosion" and claims.caughtBy(own, event) then
-                own:die() -- this machine decides its own player's death
-            end
-            if worldsync.FORWARD_EVENTS[event.type] then
-                list[#list + 1] = worldsync.localEvent(level, event)
-            end
+        for _, entry in ipairs(message.inp) do
+            remoteMasks[entry[1]] = entry[2]
         end
-        level:protect(present.all, list, level, localIds())
-    end,
-    -- The host's answer to a claim: the claimed entity follows the host again
-    -- from snapshot n on (a denied claim is undone by it). A denied grab drops
-    -- what this machine's player holds.
-    verdict = function(message)
-        local claim = inflight[message.c]
-        inflight[message.c] = nil
-        if message.g ~= generation or not claim or not level then
-            return
+        votes = {}
+        for _, id in ipairs(message.vt) do
+            votes[id] = true
         end
-        if pending[claim.id] then
-            pending[claim.id]["until"] = message.n
+        countdown = message.cd or nil
+        if predicting and message.ack > 0 then -- the host has this machine's inputs
+            local early = message.ack - h -- how far ahead of the host they arrived
+            margin = margin and margin + (early - margin) * 0.1 or early
         end
-        local own = slots[1].player
-        if not message.ok and claim.k == "grab" and own.carrying and own.carrying.id == claim.id then
-            own.carrying.held = false
-            own.carrying = nil
-        end
+        reconcile(state, h, flat)
     end,
     restart = function(message)
         if message.generation <= generation then
@@ -581,33 +536,12 @@ local clientHandler = {
     joined = function(id)
         if id ~= slots[1].id and not remoteIds[id] and level then
             remoteIds[id] = true
-            remoteSync[id] = nil -- a new player: its sequence starts again
-            spawn(level.spawn.x, level.spawn.y, id) -- placed by its first state
-        end
-    end,
-    -- The other players' states, forwarded by the host: newest wins per player.
-    players = function(message)
-        if message.g ~= generation or not level then
-            return
-        end
-        for _, entry in ipairs(message.list) do
-            local id = entry[1]
-            local puppet = id ~= slots[1].id and playerWithId(id)
-            if puppet and puppet.remote then
-                playersync.accept(remoteSync, entry, puppet, love.timer.getTime())
-            end
-        end
-    end,
-    -- The host overrides this machine's player (late join at a checkpoint, a
-    -- refused move).
-    setPlayer = function(message)
-        if message.g == generation and level then
-            playersync.override(owner, slots[1].player, message)
+            spawn(level.spawn.x, level.spawn.y, id) -- placed by the host's next state
         end
     end,
     left = function(id)
         remoteIds[id] = nil
-        remoteSync[id] = nil
+        remoteMasks[id] = nil
         local player = playerWithId(id)
         if player then
             removePlayer(player)
@@ -661,65 +595,88 @@ local function voteList()
     return list
 end
 
--- The host's world to every client: capture a snapshot (under script limits:
--- script state that is not plain data stops the level), then a delta or full
--- snapshot per client, then the events since the last send.
-local function sendWorld()
+-- Host, 20 times a second: save the level's state after this tick (under
+-- script limits: script state that is not plain data stops the level) and
+-- send each client its delta, with the inputs every player used.
+local function sendStates()
+    flushOutbox() -- a restart goes out before the new level's state
     local state
     local ok, err = script.protect(function()
-        state = worldsync.capture(world, level)
+        state = fullstate.capture(level)
     end)
     if not ok then
         level:fault(err)
         return
     end
-    for id in pairs(world.clients) do
-        local message, full = worldsync.messageFor(world, id, state, love.timer.getTime())
+    local entry = statesync.record(states, tick, state)
+    local used = {}
+    for _, player in ipairs(level.players) do
+        used[#used + 1] = { player.id, input.pack(player.input, level.actionNames) }
+    end
+    for id in pairs(states.clients) do
+        local message, full = statesync.messageFor(states, id, entry, love.timer.getTime())
         if message then
-            message.g, message.vt, message.cd = generation, voteList(), countdown or false
+            message.g, message.ack, message.inp = generation, inputsync.newest(inputs, id), used
+            message.vt, message.cd = voteList(), countdown or false
             net:sendTo(id, message, not full)
         end
     end
-    if #worldEvents > 0 then
-        net:broadcast({ t = "events", g = generation, list = worldEvents })
-        worldEvents = {}
+end
+
+-- Host: one tick, every player with the input it has for that tick.
+local function hostTick(step)
+    local t = tick + 1
+    for _, player in ipairs(level.players) do
+        if remoteIds[player.id] then
+            player.input = input.unpack(inputsync.take(inputs, player.id, t), level.actionNames)
+        end
+    end
+    local wasFinished = level.finished
+    level:update(step)
+    tick = t
+    level:protect(present.all, level:takeEvents(), level, localIds())
+    if not wasFinished and level.finished and level.finished.outcome == "win" then
+        gameplay.resetRespawns()
+    end
+    updateVote(step)
+    if net and tick % SEND_EVERY == 0 then
+        sendStates()
     end
 end
 
--- 20 times a second: a client sends its player's state (and the newest world
--- snapshot it has) to the host; the host sends every player's newest state to
--- the clients (its own, and the clients' it accepted since the last send),
--- the setPlayers its scripts caused, and the world.
-local function sendNetwork()
-    local own = playersync.nextState(owner, slots[1].player)
-    if NET_MODE == "client" then
-        net:sendState({ t = "state", g = generation, s = own.s, a = own.a, p = own.p, e = own.e,
-            k = worldsync.ack(world) })
-        return
-    end
-    flushOutbox() -- a restart goes out before the new level's world
-    local list = { { slots[1].id, own.s, own.p, own.e } }
-    for id, record in pairs(remoteSync) do
-        if record.forward then
-            list[#list + 1] = { id, record.forward.s, record.forward.p, record.forward.e }
-            record.forward = nil
-        end
-    end
-    net:broadcastState({ t = "players", g = generation, list = list })
-    for id, pending in pairs(pendingSet) do
-        if remoteSync[id] then
-            local message = playersync.overrideMessage(remoteSync[id], pending)
-            message.g = generation
-            hostSends[#hostSends + 1] = { id = id, message = message }
-        end
-    end
-    pendingSet = {}
-    sendWorld()
+-- Client: one tick ahead, with this machine's input recorded and sent.
+local function clientTick(step)
+    local t = tick + 1
+    local mask = input.pack(slots[1].source.read(level.actions), level.actionNames)
+    inputsync.record(inputs, t, mask)
+    interp.decay()
+    simulate(t, step)
+    local message = inputsync.message(inputs, t)
+    message.g, message.k = generation, statesync.ack(states)
+    net:sendInput(message)
 end
 
--- Is this machine playing a level right now (a client waits for its welcome)?
+-- Client: how fast to run, so its inputs reach the host about TARGET_LEAD
+-- ticks early: a little faster when they arrive late, slower when early.
+local function clientRate()
+    if not margin then
+        return 1
+    end
+    local error = inputsync.TARGET_LEAD - margin
+    if math.abs(error) < 1 then
+        return 1
+    end
+    -- Gentle: the measurement is a round trip old, so pushing harder overshoots.
+    return 1 + math.max(-0.25, math.min(0.25, error * 0.015))
+end
+
+-- Is this machine playing a level right now (a client waits for its welcome
+-- and the host's first state)?
 local function playing()
-    return level ~= nil and not (NET_MODE == "client" and (not net or net.stage ~= "joined"))
+    if NET_MODE == "client" then
+        return level ~= nil and net ~= nil and net.stage == "joined" and predicting
+    end
+    return level ~= nil
 end
 
 -- ── Scene ─────────────────────────────────────────────────────────────────
@@ -730,8 +687,8 @@ function gameplay.load()
     remoteIds = {}
     outbox = {}
     generation = 0
-    owner, remoteSync, hostSends = playersync.owner(), {}, {}
-    world = NET_MODE == "host" and worldsync.host() or nil
+    states = NET_MODE == "host" and statesync.host() or nil
+    inputs = NET_MODE == "host" and inputsync.host() or nil
     if NET_MODE == "client" then
         level = nil
     else
@@ -747,63 +704,23 @@ function gameplay.update(delta)
     if not playing() then
         return
     end
-    alpha = clock:advance(delta, function(step)
-        for _, slot in ipairs(slots) do
-            slot.player.input = slot.source.read(level.actions)
-        end
+    local client = NET_MODE == "client"
+    alpha = clock:advance(client and delta * clientRate() or delta, function(step)
         interp.record(movingBodies())
-        local now = love.timer.getTime()
-        local seen = {} -- host: remote players before the step (did a script move one?)
-        for _, player in ipairs(level.players) do
-            if player.remote then
-                local names = playersync.advance(player, step, level, now)
-                if #names > 0 then
-                    presentRemoteEvents(player.id, names, player)
-                end
-                seen[player] = NET_MODE == "host" and playersync.watch(player) or nil
-            end
-        end
-        local client = NET_MODE == "client"
         if client then
-            worldsync.advance(level, step, world.clock, now)
-        end
-        local wasFinished = level.finished
-        level:update(step, client and worldsync.CLIENT_STAGES or nil)
-        tick = tick + 1
-        for player, before in pairs(seen) do
-            local changed = playersync.changes(pendingSet[player.id], before, player)
-            pendingSet[player.id] = changed
-            if changed and (changed.x or changed.y) then
-                playersync.hold(player) -- stays where the script put it until its owner follows
+            clientTick(step)
+        else
+            local names = level.actionNames
+            for _, slot in ipairs(slots) do
+                -- Through the mask, as clients see it: their predicted copy of
+                -- this player then holds exactly the same input table.
+                slot.player.input = input.unpack(input.pack(slot.source.read(level.actions), names), names)
             end
-        end
-        level:protect(handleClaims)
-        local events = level:takeEvents()
-        playersync.noteEvents(owner, events, slots[1].id)
-        if NET_MODE == "host" and net then
-            for _, event in ipairs(events) do
-                if worldsync.FORWARD_EVENTS[event.type] and #worldEvents < 256 then
-                    worldEvents[#worldEvents + 1] = netstate.event(event)
-                end
-            end
-        end
-        level:protect(present.all, events, level, localIds())
-        if not wasFinished and level.finished and level.finished.outcome == "win" then
-            gameplay.resetRespawns()
-        end
-        if NET_MODE ~= "client" then
-            updateVote(step)
-        end
-        if net and tick % playersync.SEND_EVERY == 0 then
-            sendNetwork()
+            hostTick(step)
         end
     end)
     if NET_MODE == "host" and net then
         flushOutbox()
-        for _, send in ipairs(hostSends) do
-            net:sendTo(send.id, send.message)
-        end
-        hostSends = {}
     end
 end
 
@@ -927,6 +844,16 @@ end
 
 function gameplay.getLevel()
     return level
+end
+
+-- Client: how many ticks early its inputs reach the host (smoothed), or nil.
+function gameplay.getInputMargin()
+    return margin
+end
+
+-- Ticks run in the current level (on a client: the tick it has predicted to).
+function gameplay.getTick()
+    return tick
 end
 
 function gameplay.getGeneration()

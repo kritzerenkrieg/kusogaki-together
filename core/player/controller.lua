@@ -4,7 +4,6 @@ local mathx = require("core.mathx")
 local config = require("core.player.config")
 local state = require("core.player.state")
 local carry = require("core.player.carry")
-local claims = require("core.level.claims")
 local physics = require("core.physics")
 
 local CONFIG = config.CONFIG
@@ -83,9 +82,6 @@ function controller.kickStart(self, edges, level)
         local thrown = carry.throw(self,
             self.facing * CONFIG.throwSpeed + self.vx * 0.5, CONFIG.throwArc, level.statics)
         self.kickHits[thrown] = true -- never kick the prop we just threw
-        if not thrown.isPlayer then
-            claims.note(level, { k = "throw", id = thrown.id, vx = thrown.vx, vy = thrown.vy, player = self })
-        end
         state.emit(self, "throw")
     else
         state.emit(self, "kick")
@@ -120,9 +116,7 @@ local function knockBack(self, other)
 end
 
 -- Push props and players that the active kick hitbox overlaps, break blocks
--- and kill enemies it hits, once per kick. On a network client the hits are
--- also claims (core/level/claims.lua); another machine's player is always
--- knocked through a claim, by its own machine.
+-- and kill enemies it hits, once per kick.
 function controller.kickHits(self, level)
     if self.kickTime <= 0 then
         return
@@ -134,7 +128,6 @@ function controller.kickHits(self, level)
             prop.vx = self.facing * CONFIG.kickPush
             prop.vy = CONFIG.kickLift
             prop.onGround = false
-            claims.note(level, { k = "kickProp", id = prop.id, d = self.facing, player = self })
             state.emit(self, "kickHit")
         end
     end
@@ -143,7 +136,6 @@ function controller.kickHits(self, level)
             self.kickHits[block] = true
             if block:onKick(self) then
                 block.brokenBy = self
-                claims.note(level, { k = "kickBlock", id = block.id, player = self })
             end
         end
     end
@@ -151,11 +143,7 @@ function controller.kickHits(self, level)
         if other ~= self and not other.dead and not other.held and not self.kickHits[other]
             and physics.overlaps(box, other) then
             self.kickHits[other] = true
-            if other.remote then
-                claims.note(level, { k = "kickPlayer", id = other.id, d = self.facing, player = self })
-            else
-                knockBack(self, other)
-            end
+            knockBack(self, other)
             state.emit(self, "kickHit")
         end
     end
@@ -166,7 +154,6 @@ function controller.kickHits(self, level)
                 enemy.killedBy = "kick"
                 enemy.kickVx = self.facing * CONFIG.enemyKickPush
                 enemy.kickVy = CONFIG.enemyKickLift
-                claims.note(level, { k = "kill", id = enemy.id, d = self.facing, player = self })
             end
         end
     end

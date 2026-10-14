@@ -4,7 +4,6 @@ local render = require("core.graphics.render")
 local events = require("core.level.events")
 local playerConfig = require("core.player.config")
 local blast = require("core.level.blast")
-local claims = require("core.level.claims")
 
 local enemies = {}
 
@@ -102,7 +101,6 @@ function enemies.touchPlayers(level, players)
                 if player.falling and wasAbove(player, enemy) and enemy:onStomp(player) then
                     enemy.killedBy = "stomp"
                     player:bounce()
-                    claims.note(level, { k = "stomp", id = enemy.id, player = player })
                 elseif player.kickGrace <= 0 and enemy:onTouch(player) then
                     player:die()
                 end

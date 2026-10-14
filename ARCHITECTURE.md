@@ -30,7 +30,7 @@ core/
     netstate.lua        net state: snapshot fields per player/entity, wire form of events
     props.lua           prop rules (detonating props)
     triggers.lua        non-solid triggers touched by players
-    claims.lua          network clients: claims on the host's world, shown at once; host judging
+    fullstate.lua       the whole level as plain data, and restoring it (hybrid rollback)
   physics/            AABB physics; require("core.physics") is init.lua
     config.lua          tuning constants
     geometry.lua        overlap tests, contact records
@@ -58,9 +58,8 @@ core/
   net/                network play (NETWORKING.md)
     protocol.lua        message types, validation of untrusted bytes, port, addresses
     session.lua         ENet host and client: join handshake, refusals, session messages
-    playersync.lua      player state: wire form, puppets, owner sends, host referee, setPlayer
-    worldsync.lua       the host's world: snapshots, acked deltas, hash, client apply, events
-    smooth.lua          showing remote bodies 100 ms behind, blended between updates
+    inputsync.lua       inputs to the host: client input history, host input buffers
+    statesync.lua       the host's state to clients: per-field deltas, acknowledgements, hash
   version.lua         game and protocol versions (must match to play together)
   fixedstep.lua       fixed-timestep clock (60 Hz ticks)
   script.lua          the script sandbox: environment, read-only engine views, limits
@@ -162,9 +161,7 @@ Entity scripts are sandboxed (no `love`, no `require`), so the base `Entity` pro
 The scene runs `Level:update` in fixed 1/60 s ticks through `core/fixedstep.lua`, never with the raw frame time; a frame may run zero or several ticks. Drawing blends moving bodies (players, enemies, props) between the last two ticks (`core/graphics/interp.lua`) and puts them back afterwards, so the simulation never sees a blended position. The camera follows the blended players.
 
 
-**Network clients:** a client's level has `remoteWorld` set; the scene runs `level:update(delta, worldsync.CLIENT_STAGES)`, only its own player's stages (input, players, collisions, hazards, breakBlocks, enemyTouch, bounds, claims, playerAnimation), and applies the host's snapshots between ticks (`core/net/worldsync.lua`). What its player does to the world (stomps, kicks, breaking blocks, carrying) is noted as a claim (`core/level/claims.lua`) and shown at once by the `claims` stage; the host judges it. Props are immovable there (the host moves them).
-
-**Puppets (network play):** another machine's player is a puppet here (`player.remote`, `core/net/playersync.lua`): the `players` and `playerAnimation` stages skip it, and so do the rules that change a player (`hazards`, `breakBlocks`, `enemyTouch`, `detonations`, `enemyDeaths`, `bounds`; they get `stages.simulated(level)`), because its owner's machine runs those. Rules that only read players (`enemies` waking, `triggers`) see everyone. A puppet is solid but `immovable` (infinite mass, never settled against statics): a local player walking into it stops; one standing on a local player is ignored by that pair. Grabs skip puppets (carrying players online comes later); kicking one is a claim its own machine applies. The scene shows puppets 100 ms behind their owner, blended between its states (`playersync.advance`, `core/net/smooth.lua`).
+**Network play (hybrid rollback):** the host runs `level:update` with every player's input from the network; a client runs the same steps ahead as a prediction, and when the host's state arrives restores it (`core/level/fullstate.lua`) and replays its inputs since, unless it predicted that state exactly. Rules know nothing about the network.
 
 A step runs the level's `stages` in order (`core/level/stages.lua`; a copy of the list, so a stage may change it). Each level gets fresh stage entries, and scripts may add, remove, replace or reorder them (`level:addStage`, `removeStage`, `replaceStage`, `findStage`). Finishing the level (`level:finish`) ends the step after the current stage. The built-in stages:
 
@@ -176,9 +173,8 @@ A step runs the level's `stages` in order (`core/level/stages.lua`; a copy of th
 6. `collisions`: dynamic body collisions (live players in join order, then props), then settle against statics.
 7. `triggers`, `hazards`, `breakBlocks`, `enemyTouch`: trigger touches, hazard touches, block breaking, enemy stomp/touch.
 8. `detonations`, `enemyDeaths`, `bounds`: detonated props explode; dead and detonated enemies removed (corpse or explosion); fallen bodies handled.
-9. `claims`: on a network client, this step's claims are shown at once (`core/level/claims.lua`); nothing on the host.
-10. `playerAnimation`: animation state refresh for players on the platformer controller.
-11. `scripts`: level scripts' `update`.
+9. `playerAnimation`: animation state refresh for players on the platformer controller.
+10. `scripts`: level scripts' `update`.
 
 Draw order: background (screen space); then, in world space inside `camera.pushWorld()`, level scripts' `drawBehind`, geometry, triggers, hazards, blocks, enemies, props, debris, corpses, the players (`level:drawPlayers`, player 1 on top, through a controller's `draw` when it has one), explosions and level scripts' `drawWorld`; then, in screen space, level scripts' `drawHud` and the HUD. The scene calls `camera.frame(level)` at draw time, after blending: by default it centers the midpoint of the live players' extent on both axes, clamped to the level (see `MODDING.md`, Camera).
 
@@ -271,7 +267,7 @@ Entity events also carry `entity`, the object itself, for local presentation (im
 - Input sources read the level's custom actions too (`source.read(level.actions)`): each action names a key per keyboard layout and gamepad buttons, stick directions or triggers.
 - The scene shows a banner over a stopped level ("This level stopped") or a finished one (`LEVEL CLEAR`, `GAME OVER`, or the outcome word, with the level's message).
 - **Restart vote:** each player toggles a vote (R for layout 1; with `--local-coop` also E for layout 2 and Back on a gamepad). The HUD shows which players voted. While more than half the players vote, a 5 s countdown runs and then the level restarts; dropping to half or fewer cancels it. A restart clears the votes.
-- **Network play:** `love2d . --host` opens a session (UDP port 26967); `love2d . --join <ip[:port]>` joins one. Player ids are stable for the session (`level:addPlayer(player, id)`), so a remote player keeps its id across restarts; remote players are in `level.players` as puppets but not in the slots; each machine sends its own player's state 20 times a second and the host forwards everyone's (`core/net/playersync.lua`). A client waits for the host's welcome before it has a level. ESC to the main menu ends the session. Design and status: `NETWORKING.md`, `DEVELOPMENT_PHASE.md`.
+- **Network play:** `love2d . --host` opens a session (UDP port 26967); `love2d . --join <ip[:port]>` joins one. Player ids are stable for the session (`level:addPlayer(player, id)`), so a remote player keeps its id across restarts; remote players are in `level.players` but not in the slots; clients send their inputs every tick and the host sends its whole state 20 times a second (hybrid rollback, `core/net/inputsync.lua`, `core/net/statesync.lua`). A client waits for the host's welcome and first state before it plays. ESC to the main menu ends the session. Design and status: `NETWORKING.md`, `DEVELOPMENT_PHASE.md`.
 - **Restart seed:** this machine is the host and the source of truth (`NETWORKING.md`, Source of truth). It picks each (re)start's seed, queues a `restart{seed}` session message (`gameplay.takeOutbox`) and restarts through `gameplay.restart(seed)`, the same call a client makes on that message; it refuses anything but a whole number in 1..2147483646. The level keeps its seed as `level.seed`.
 - **Respawn count:** `player.respawns` counts respawns (`core/player/state.lua`). A restart carries each slot's count to its new player; winning (`level:finish("win")`) resets every count (`gameplay.resetRespawns`).
 - `love2d . --level <name>` plays another bundled level (default `example`).
