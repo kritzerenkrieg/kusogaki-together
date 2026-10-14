@@ -2,7 +2,7 @@
 
 Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Undecided choices are tracked in `OPEN_DECISION.md`. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
 
-Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 starts with the move to LÖVE 12).
+Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see `OPEN_DECISION.md`; Phase 2 starts with ENet host/client).
 
 ---
 
@@ -17,7 +17,7 @@ Last updated: 2026-10-14 (Phase 1 complete; every decision for Phase 2 made, see
 | Online model | P2P (ENet/UDP) with a backend for accounts, level repository, lobby, NAT punching and relay. **Each machine owns its own player's movement** and sends its state (newest wins, missed updates catch up); **the host owns the world and the session** and is the referee and relay for player movement. No lockstep, no client prediction/rewind. Details: `NETWORKING.md` (Source of truth, Netcode). |
 | Session size | Up to **5 players** (1 host + 4 clients). |
 | Backend stack | **Go** + Postgres + S3-compatible storage. |
-| Engine version | **Move to LÖVE 12** (it has HTTPS; bundling `lua-https` for 11.5 is rejected), as the first step of Phase 2, so the netcode is written and tested once on the engine it ships with. |
+| Engine version | **Stay on LÖVE 11.5.** HTTPS (Phase 4) comes from the native `lua-https` module, bundled per platform. LÖVE 12 has no stable release and is long delayed; reconsider only if it ships. |
 | Connectivity | Our own rendezvous (hole punching) + relay, digits-only room codes, UDP port **26967**. No Epic/Steam/UPnP/VPN tools; players never set up port forwarding. |
 | User levels | Custom Lua in uploaded levels is **allowed**, behind a hardened sandbox. |
 | Uploaded assets | png, jpg/jpeg, gif, webp, wav, ogg, mp3. The server converts webp and gif to png (LÖVE 11.5 can't decode them); animated gif becomes a spritesheet plus `<name>.anim.json`. |
@@ -102,7 +102,6 @@ All decisions needed for Phase 2 are made (`OPEN_DECISION.md`, Decided). New ope
 Settled by the model: a custom (script) controller runs on its owner's machine for that player; clients run only the draw hooks and `message` of level scripts.
 
 Then, in rough order:
-0. Move to LÖVE 12 (after checking it has a stable release and that `enet`, `love.data` and every test suite work on it); re-check the LÖVE 11.5 limits written in the docs.
 1. ENet host/client over direct IP; join sends `level.seed`, the level generation and a full snapshot; the outbox's session messages go on the reliable channel.
 2. Owner → host player state (newest wins, sequence + authority + generation numbers); host forwards it and runs referee checks; `setPlayer` overrides.
 3. Host → clients world snapshots and deltas, periodic full snapshots and a world hash so clients detect drift.
@@ -116,9 +115,9 @@ Testing: a built-in `--net-lag <ms> --net-loss <%>` emulator for the 150 ms / 5%
 | Phase | Scope |
 |---|---|
 | 1 (done) | Local co-op polish, plus the local-player view and `restart{seed}` |
-| 2 | LAN netcode over direct IP: ENet, owner-driven player state, host world snapshots and deltas, interpolation. Starts with the move to LÖVE 12. |
+| 2 | LAN netcode over direct IP: ENet, owner-driven player state, host world snapshots and deltas, interpolation. |
 | 3 | Plug-and-play internet play: rendezvous (NAT hole punching) + relay fallback, room codes, no accounts. Players never set up port forwarding. |
-| 4 | Backend: accounts + level repository (upload pipeline, asset conversion, headless load test). Needs HTTPS: LÖVE 11.5 has no TLS, so ship `lua-https` or move to LÖVE 12. |
+| 4 | Backend: accounts + level repository (upload pipeline, asset conversion, headless load test). Needs HTTPS: LÖVE 11.5 has no TLS, so ship the `lua-https` module per platform. |
 | 5 | Public lobby (room list, accounts) on top of Phase 3 |
 | 6 | Polish: host migration, reconnect, moderation |
 | after 2 | Simulation in its own thread (watchdog option B) |

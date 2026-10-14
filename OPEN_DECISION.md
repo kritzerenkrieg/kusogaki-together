@@ -18,13 +18,14 @@ Nothing open. Add new questions here as rows: | # | Decision | Proposal | Choice
 
 Most recent first. Each line: date, decision (choice number), where it is written.
 
-- 2026-10-14: Move to LÖVE 12 as the first step of Phase 2, after checking it has a stable release and that `enet` and the tests work on it. (E6; `DEVELOPMENT_PHASE.md`)
+- 2026-10-14: Stay on LÖVE 11.5; HTTPS from the bundled `lua-https` module (Phase 4). Replaces E3 and E6: LÖVE 12 has no stable release (latest is 11.5, Dec 2023) and is long delayed. (`NETWORKING.md` HTTPS, `DEVELOPMENT_PHASE.md`)
+- 2026-10-14: ~~Move to LÖVE 12 as the first step of Phase 2.~~ Replaced above. (E6)
 - 2026-10-14: Simulation in its own thread (watchdog option B) after Phase 2, once drawing works from snapshots. (A5; `DEVELOPMENT_PHASE.md`)
 - 2026-10-14: A host script that changes a player sends a `setPlayer` automatically (at most at the send rate) for one-off moves; continuous effects go in synced level state that each owner's controller applies. (A4; `NETWORKING.md` Source of truth, `MODDING.md` Online play)
 
 - 2026-10-14: Gamepads parked: not discussed again until there is nothing else to do. (E5; `DEVELOPMENT_PHASE.md`)
 - 2026-10-14: Backend in Go. (E4; `DEVELOPMENT_PHASE.md`)
-- 2026-10-14: Move to LÖVE 12 for HTTPS; bundling `lua-https` rejected. (E3; `NETWORKING.md` HTTPS, `DEVELOPMENT_PHASE.md`)
+- 2026-10-14: ~~Move to LÖVE 12 for HTTPS; bundling `lua-https` rejected.~~ Replaced by staying on 11.5 with `lua-https`. (E3; `NETWORKING.md` HTTPS, `DEVELOPMENT_PHASE.md`)
 - 2026-10-14: Room codes are digits only. (E2; `NETWORKING.md` Connectivity, Public lobby)
 - 2026-10-14: Our own rendezvous (hole punching) + relay; Epic Online Services, Steam networking, UPnP and VPN tools rejected. (E1; `NETWORKING.md` Connectivity)
 - 2026-10-14: Built-in `--net-lag <ms> --net-loss <%>` emulator for testing. (D6; `DEVELOPMENT_PHASE.md`)

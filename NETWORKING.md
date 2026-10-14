@@ -241,7 +241,7 @@ Uploads may use common media types. The server normalizes them so every client g
 
 ### HTTPS
 - LÖVE 11.5 ships `socket` (luasocket) but no TLS module: `ssl` and `https` are not available.
-- **Decided: move to LÖVE 12**, which includes HTTPS. (Bundling `lua-https` for 11.5 is rejected.) The move is the first step of Phase 2; the LÖVE 11.5 limits written elsewhere (image formats, `enet`, `love.data`) are re-checked then.
+- **Decided: stay on LÖVE 11.5 and bundle the native `lua-https` module** (from the LÖVE project), built per platform and shipped with the game. LÖVE 12, which includes it, has no stable release and is long delayed. Needed from Phase 4 (accounts, repository); Phases 2–3 need no HTTPS.
 - Plain HTTP is allowed only against a localhost dev server.
 - Backend calls run off the main loop, in a `love.thread`, so the game never stalls on the network.
 
