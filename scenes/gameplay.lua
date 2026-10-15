@@ -56,11 +56,16 @@ local gameplay = {}
 -- plays the host's); `--host` / `--join <ip[:port]>` start network play;
 -- `--net-lag <ms> --net-loss <percent>` make this machine's connection worse
 -- for testing (core/net/session.lua); `--local-coop` turns on the deprecated
--- couch co-op.
+-- couch co-op. Internet play (Phase 3, until the lobby has it):
+-- `--host --online` opens a room on our server and shows its code;
+-- `--code <6 digits>` joins one; `--server <host[:port]>` names the server;
+-- `--relay-only` hides this machine's address behind the relay.
 local LEVEL_NAME = "example"
 local LOCAL_COOP = false
 local NET_MODE, JOIN_ADDRESS = nil, nil -- "host" | "client" | nil
 local NET_LAG, NET_LOSS = 0, 0          -- simulated extra round trip (s) and loss (fraction)
+local ONLINE = nil                      -- { server, code, relayOnly } for internet play
+local onlineOptions = { server = nil, relayOnly = false }
 for i, value in ipairs(arg or {}) do
     if value == "--level" and arg[i + 1] then
         LEVEL_NAME = arg[i + 1]
@@ -74,6 +79,15 @@ for i, value in ipairs(arg or {}) do
         NET_LAG = tonumber(arg[i + 1]) / 1000
     elseif value == "--net-loss" and tonumber(arg[i + 1]) then
         NET_LOSS = tonumber(arg[i + 1]) / 100
+    elseif value == "--online" then
+        ONLINE = onlineOptions
+    elseif value == "--code" and arg[i + 1] then
+        NET_MODE, ONLINE = "client", onlineOptions
+        onlineOptions.code = arg[i + 1]
+    elseif value == "--server" and arg[i + 1] then
+        onlineOptions.server = arg[i + 1]
+    elseif value == "--relay-only" then
+        onlineOptions.relayOnly = true
     end
 end
 session.emulate(NET_LAG, NET_LOSS)
@@ -560,14 +574,16 @@ local function startNetwork()
             bind = NET_BIND,
             level = { name = LEVEL_NAME, fingerprint = levelpack.fingerprint(level.root) },
             handler = hostHandler,
+            rendezvous = ONLINE,
         })
         if not net then
             netStatus = "Could not host: " .. tostring(err)
         end
     elseif NET_MODE == "client" then
         local err
-        net, err = session.join(JOIN_ADDRESS, clientHandler)
-        netStatus = net and ("Connecting to " .. JOIN_ADDRESS .. "...") or ("Could not join: " .. tostring(err))
+        net, err = session.join(JOIN_ADDRESS, clientHandler, { rendezvous = ONLINE })
+        local target = ONLINE and ("room " .. tostring(ONLINE.code)) or JOIN_ADDRESS
+        netStatus = net and ("Connecting to " .. target .. "...") or ("Could not join: " .. tostring(err))
     end
 end
 
@@ -697,9 +713,24 @@ function gameplay.load()
     startNetwork()
 end
 
+-- Host of an internet room: its code (or what went wrong) on the status line.
+local function showRoom()
+    local code, state, reason = net:room()
+    if state == "open" then
+        netStatus = "Room code " .. code .. (ONLINE.relayOnly and " (relay only)" or "")
+    elseif state == "opening" then
+        netStatus = "Opening a room..."
+    elseif state == "failed" then
+        netStatus = "Room: " .. tostring(reason)
+    end
+end
+
 function gameplay.update(delta)
     if net then
         net:service()
+        if NET_MODE == "host" and ONLINE and net.room then
+            showRoom()
+        end
     end
     if not playing() then
         return
@@ -862,8 +893,10 @@ end
 
 -- Tests: play as "host" or "client" (address) without a command line, on
 -- another port and bind address. Takes effect at the next gameplay.load.
+-- options.online = { server, code, relayOnly } for internet play.
 function gameplay.configure(options)
     NET_MODE, JOIN_ADDRESS = options.mode, options.address
+    ONLINE = options.online
     NET_PORT, NET_BIND = options.port, options.bind
     LEVEL_NAME = options.level or LEVEL_NAME
 end

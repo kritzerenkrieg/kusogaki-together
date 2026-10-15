@@ -7,8 +7,16 @@
 --
 -- Both sides call `service()` once per frame; it handles everything that
 -- arrived and returns at once.
+--
+-- Internet play (Phase 3): with `rendezvous` options the host opens a room
+-- on our server and punches toward each client the server announces; a
+-- client joins by room code and tries every address the server gives (the
+-- host's public and LAN addresses, later the relay), keeping the first
+-- connection. Connections nobody asked for (made by punching) are reset.
+-- See core/net/rendezvous.lua and NETWORKING.md (Connectivity).
 local enet = require("enet")
 local protocol = require("core.net.protocol")
+local rendezvous = require("core.net.rendezvous")
 local version = require("core.version")
 
 local session = {}
@@ -17,6 +25,7 @@ local MAX_CLIENTS = protocol.MAX_PLAYERS - 1
 local TIMEOUT_MS = 5000      -- a peer silent this long is dropped (OPEN_DECISION C3)
 local HANDSHAKE_SECONDS = 5  -- a client must finish the handshake within this
 local MAX_INPUTS = 120       -- input messages a client may send per second (60 expected)
+local SPARE_PEERS = 16       -- ENet peers for probes and punches
 
 local function now()
     return love.timer.getTime()
@@ -118,6 +127,8 @@ Host.__index = Host
 
 -- Open a session. options:
 --   port      UDP port (default protocol.PORT); bind address options.bind (default "*")
+--   rendezvous  { server = "host[:port]", relayOnly } to open an internet room
+--             (its code: host:room())
 --   level     { name, fingerprint } of the level being played
 --   handler   the game's side:
 --     accept()            -> a free player id, or nil and a reason (session full)
@@ -128,12 +139,26 @@ Host.__index = Host
 -- Returns the host, or nil and an error (port in use).
 function session.host(options)
     local address = (options.bind or "*") .. ":" .. (options.port or protocol.PORT)
-    local ok, enetHost = pcall(enet.host_create, address, MAX_CLIENTS + 2, protocol.CHANNELS)
+    local ok, enetHost = pcall(enet.host_create, address, MAX_CLIENTS + SPARE_PEERS, protocol.CHANNELS)
     if not ok or not enetHost then
         return nil, "could not open port " .. (options.port or protocol.PORT)
     end
+    local room
+    if options.rendezvous then
+        local err
+        room, err = rendezvous.host({
+            server = options.rendezvous.server, relayOnly = options.rendezvous.relayOnly,
+            protocol = version.PROTOCOL, enet = enetHost,
+        })
+        if not room then
+            enetHost:destroy()
+            return nil, err
+        end
+    end
     return setmetatable({
         enet = enetHost,
+        rendezvous = room,
+        punches = {}, -- peer index -> true: connect attempts that only open this machine's router
         level = options.level,
         handler = options.handler,
         game = version.GAME, -- versions this host plays (fixed when it opens)
@@ -210,15 +235,39 @@ local function hostDisconnected(self, index)
     end
 end
 
+-- A connect attempt toward `address` that only opens this machine's router
+-- for the packets coming back (hole punching); `data` is a relay token.
+function Host:punch(address, data)
+    local ok, peer = pcall(self.enet.connect, self.enet, address, protocol.CHANNELS, data)
+    if ok and peer then
+        setTimeout(peer)
+        self.punches[peer:index()] = true
+    end
+end
+
 function Host:service()
     flushOutbox()
+    if self.rendezvous then
+        for _, action in ipairs(self.rendezvous:update(now())) do
+            self:punch(action.address, action.data)
+        end
+    end
     while self.enet do
         local event = nextEvent(self)
         if not event then
             break
         end
         local index = event.peer:index()
-        if event.type == "connect" then
+        if self.punches[index] then
+            -- A punch that connected (the other side answered it) or gave up:
+            -- not a client. The client's own connection arrives separately.
+            if event.type ~= "receive" then
+                self.punches[index] = nil
+                if event.type == "connect" then
+                    event.peer:reset()
+                end
+            end
+        elseif event.type == "connect" then
             setTimeout(event.peer)
             self.peers[index] = { peer = event.peer, stage = "hello", since = now() }
         elseif event.type == "receive" then
@@ -270,10 +319,23 @@ function Host:clientIds()
     return ids
 end
 
+-- The internet room: its code (nil until the server gave one) and state
+-- ("opening" | "open" | "failed" with a reason), or nil without one.
+function Host:room()
+    local room = self.rendezvous
+    if not room then
+        return nil
+    end
+    return room.code, room.state, room.error
+end
+
 -- End the session: every client is told and disconnected.
 function Host:close()
     if not self.enet then
         return
+    end
+    if self.rendezvous then
+        self.rendezvous:close()
     end
     for _, entry in pairs(self.peers) do
         if entry.peer:state() == "connected" then
@@ -293,7 +355,9 @@ end
 local Client = {}
 Client.__index = Client
 
--- Connect to a host. `address` is "ip" or "ip:port". handler:
+-- Connect to a host. `address` is "ip" or "ip:port", or nil with
+-- options.rendezvous = { server, code, relayOnly } to join an internet room.
+-- handler:
 --   level(name, fingerprint) -> true when this machine has that level (else
 --                               false and a reason)
 --   welcome(message)           joined: { you, seed, generation, players }
@@ -302,30 +366,56 @@ Client.__index = Client
 --   snap(message)              the host's state (core/net/statesync.lua)
 --   closed(reason)             the session ended (refused, host gone, timeout)
 -- Returns the client, or nil and an error.
-function session.join(address, handler)
-    local target = protocol.address(address)
-    if not target then
-        return nil, "invalid address: " .. tostring(address)
+function session.join(address, handler, options)
+    options = options or {}
+    local target
+    if not options.rendezvous then
+        target = protocol.address(address)
+        if not target then
+            return nil, "invalid address: " .. tostring(address)
+        end
     end
-    local enetHost = enet.host_create(nil, 1, protocol.CHANNELS)
+    local enetHost = enet.host_create(nil, SPARE_PEERS, protocol.CHANNELS)
     if not enetHost then
         return nil, "could not open a network socket"
     end
-    local ok, peer = pcall(enetHost.connect, enetHost, target, protocol.CHANNELS)
-    if not ok or not peer then
-        enetHost:destroy()
-        return nil, "could not reach " .. target
-    end
-    setTimeout(peer)
-    return setmetatable({
+    local self = setmetatable({
         enet = enetHost,
-        peer = peer,
+        peer = nil,      -- the connection to the host, once one is made
+        attempts = {},   -- peer index -> peer: connections being tried
         handler = handler,
         stage = "connecting", -- "connecting" | "hello" | "ready" | "joined" | "closed"
         inbox = {},
         since = now(),
         reason = nil,
     }, Client)
+    if options.rendezvous then
+        local err
+        self.rendezvous, err = rendezvous.join({
+            server = options.rendezvous.server, code = options.rendezvous.code,
+            relayOnly = options.rendezvous.relayOnly, protocol = version.PROTOCOL, enet = enetHost,
+        })
+        if not self.rendezvous then
+            enetHost:destroy()
+            return nil, err
+        end
+    elseif not self:try(target, 0) then
+        enetHost:destroy()
+        return nil, "could not reach " .. target
+    end
+    return self
+end
+
+-- Try connecting to `address` as well (`data`: a relay token).
+function Client:try(address, data)
+    local ok, peer = pcall(self.enet.connect, self.enet, address, protocol.CHANNELS, data)
+    if not ok or not peer then
+        return false
+    end
+    setTimeout(peer)
+    self.attempts[peer:index()] = peer
+    self.since = now()
+    return true
 end
 
 local function clientClose(self, reason)
@@ -334,8 +424,15 @@ local function clientClose(self, reason)
     end
     self.stage = "closed"
     self.reason = self.reason or reason
-    if self.peer:state() ~= "disconnected" then
+    if self.peer and self.peer:state() ~= "disconnected" then
         self.peer:disconnect_later()
+    end
+    for _, peer in pairs(self.attempts) do
+        pcall(peer.reset, peer)
+    end
+    self.attempts = {}
+    if self.rendezvous then
+        self.rendezvous:close()
     end
     self.handler.closed(self.reason)
 end
@@ -380,24 +477,60 @@ local function clientReceive(self, data)
     end
 end
 
+-- Still waiting for the server to say where to connect?
+function Client:waiting()
+    return self.rendezvous ~= nil and self.rendezvous:pending()
+end
+
 function Client:service()
     flushOutbox()
+    local room = self.rendezvous
+    if room and self.stage ~= "closed" then
+        for _, action in ipairs(room:update(now(), self.peer ~= nil)) do
+            self:try(action.address, action.data)
+        end
+        if room.state == "failed" then
+            clientClose(self, room.error)
+        elseif room.state == "done" then
+            self.rendezvous = nil
+        end
+    end
     while self.enet and self.stage ~= "closed" do
         local event = nextEvent(self)
         if not event then
             break
         end
-        if event.type == "connect" then
-            self.stage = "hello"
-            send(self.peer, { t = "hello", protocol = version.PROTOCOL, game = version.GAME }, protocol.RELIABLE)
-        elseif event.type == "receive" then
-            clientReceive(self, event.data)
-        elseif event.type == "disconnect" then
-            clientClose(self, self.stage == "connecting" and "could not connect to the host"
-                or "lost the connection to the host")
+        local index = event.peer:index()
+        if not self.peer then
+            if event.type == "connect" and self.attempts[index] then
+                -- The first connection wins; the other attempts stop.
+                self.peer, self.attempts[index] = event.peer, nil
+                for _, peer in pairs(self.attempts) do
+                    pcall(peer.reset, peer)
+                end
+                self.attempts = {}
+                self.stage, self.since = "hello", now()
+                send(self.peer, { t = "hello", protocol = version.PROTOCOL, game = version.GAME }, protocol.RELIABLE)
+            elseif event.type == "connect" then
+                event.peer:reset() -- the host's punch got through: not our connection
+            elseif event.type == "disconnect" and self.attempts[index] then
+                self.attempts[index] = nil
+                if next(self.attempts) == nil and not self:waiting() then
+                    clientClose(self, "could not connect to the host")
+                end
+            end
+        elseif index == self.peer:index() then
+            if event.type == "receive" then
+                clientReceive(self, event.data)
+            elseif event.type == "disconnect" then
+                clientClose(self, "lost the connection to the host")
+            end
+        elseif event.type == "connect" then
+            event.peer:reset()
         end
     end
-    if self.stage ~= "joined" and self.stage ~= "closed" and now() - self.since > HANDSHAKE_SECONDS + 1 then
+    if self.stage ~= "joined" and self.stage ~= "closed" and not self:waiting()
+        and now() - self.since > HANDSHAKE_SECONDS + 1 then
         clientClose(self, "could not connect to the host")
     end
 end
@@ -419,6 +552,9 @@ end
 
 -- Round trip to the host in seconds (ENet's estimate).
 function Client:roundTrip()
+    if not self.peer then
+        return 0.1 + emulation.lag
+    end
     local ok, ms = pcall(self.peer.round_trip_time, self.peer)
     return (ok and tonumber(ms) or 100) / 1000 + emulation.lag
 end
@@ -431,7 +567,16 @@ function Client:close()
     flushOutbox(true)
     if self.stage ~= "closed" then
         self.stage = "closed"
-        self.peer:disconnect_now()
+        if self.peer then
+            self.peer:disconnect_now()
+        end
+        for _, peer in pairs(self.attempts) do
+            pcall(peer.reset, peer)
+        end
+    end
+    if self.rendezvous then
+        self.rendezvous:close()
+        self.rendezvous = nil
     end
     self.enet:flush()
     self.enet:destroy()

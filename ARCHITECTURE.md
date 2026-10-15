@@ -60,6 +60,7 @@ core/
     session.lua         ENet host and client: join handshake, refusals, session messages
     inputsync.lua       inputs to the host: client input history, host input buffers
     statesync.lua       the host's state to clients: per-field deltas, acknowledgements, hash
+    rendezvous.lua      internet rooms on our server: codes, probes, punching, relay fallback
   version.lua         game and protocol versions (must match to play together)
   fixedstep.lua       fixed-timestep clock (60 Hz ticks)
   script.lua          the script sandbox: environment, read-only engine views, limits
@@ -89,7 +90,14 @@ tests/
   sim/features.lua      input actions, stages, spawning, gravity, finish, camera, levels/topdown
   sim/scene.lua         the gameplay scene
   sim/net.lua           messages, fingerprints, host and clients over localhost
-  run.sh              every suite under every interpreter (sh tests/run.sh)
+  sim/online.lua        rooms, joining by code, direct, relay and fallback (needs the server)
+  run.sh              every suite under every interpreter, plus the server's Go tests;
+                      starts the server for sim/online.lua (sh tests/run.sh)
+server/               rendezvous and relay for internet play (Go, plain UDP, NETWORKING.md)
+  main.go             flags, the UDP loop
+  rendezvous.go       rooms, codes, the control channel, probes, introductions
+  relay.go            relay port pairs: token-checked ends, rate caps, idle close
+  enet.go             reading the token from a raw ENet connect packet
 ```
 
 Base behavior lives in `core/`; concrete types live in `levels/`.
@@ -267,7 +275,7 @@ Entity events also carry `entity`, the object itself, for local presentation (im
 - Input sources read the level's custom actions too (`source.read(level.actions)`): each action names a key per keyboard layout and gamepad buttons, stick directions or triggers.
 - The scene shows a banner over a stopped level ("This level stopped") or a finished one (`LEVEL CLEAR`, `GAME OVER`, or the outcome word, with the level's message).
 - **Restart vote:** each player toggles a vote (R for layout 1; with `--local-coop` also E for layout 2 and Back on a gamepad). The HUD shows which players voted. While more than half the players vote, a 5 s countdown runs and then the level restarts; dropping to half or fewer cancels it. A restart clears the votes.
-- **Network play:** `love2d . --host` opens a session (UDP port 26967); `love2d . --join <ip[:port]>` joins one. Player ids are stable for the session (`level:addPlayer(player, id)`), so a remote player keeps its id across restarts; remote players are in `level.players` but not in the slots; clients send their inputs every tick and the host sends its whole state 20 times a second (hybrid rollback, `core/net/inputsync.lua`, `core/net/statesync.lua`). A client waits for the host's welcome and first state before it plays. ESC to the main menu ends the session. Design and status: `NETWORKING.md`, `DEVELOPMENT_PHASE.md`.
+- **Network play:** `love2d . --host` opens a session (UDP port 26967); `love2d . --join <ip[:port]>` joins one. Player ids are stable for the session (`level:addPlayer(player, id)`), so a remote player keeps its id across restarts; remote players are in `level.players` but not in the slots; clients send their inputs every tick and the host sends its whole state 20 times a second (hybrid rollback, `core/net/inputsync.lua`, `core/net/statesync.lua`). A client waits for the host's welcome and first state before it plays. ESC to the main menu ends the session. Internet play (Phase 3): `--host --online` opens a room on our rendezvous server (`server/`, Go) and `--code <6 digits>` joins it; play stays peer to peer, through the server's relay only when punching fails or a player chose `--relay-only`. Design and status: `NETWORKING.md`, `DEVELOPMENT_PHASE.md`.
 - **Restart seed:** this machine is the host and the source of truth (`NETWORKING.md`, Source of truth). It picks each (re)start's seed, queues a `restart{seed}` session message (`gameplay.takeOutbox`) and restarts through `gameplay.restart(seed)`, the same call a client makes on that message; it refuses anything but a whole number in 1..2147483646. The level keeps its seed as `level.seed`.
 - **Respawn count:** `player.respawns` counts respawns (`core/player/state.lua`). A restart carries each slot's count to its new player; winning (`level:finish("win")`) resets every count (`gameplay.resetRespawns`).
 - `love2d . --level <name>` plays another bundled level (default `example`).

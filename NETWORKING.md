@@ -244,19 +244,18 @@ Uploads may use common media types. The server normalizes them so every client g
 
 ## Connectivity
 
-1. **Hole punching:**
-   1. On join, host and client each send a UDP packet with the session token to the rendezvous server, which records each one's public `ip:port`.
-   2. The server sends each side the other's endpoint (public, plus LAN address for same-network play).
-   3. Both sides send ENet connect attempts to each other for ~3 s.
-2. **Relay fallback:**
-   - If no direct connection is made, both connect to the backend UDP relay, which forwards datagrams by session token.
-   - Direct is tried for ~3 s (public and LAN addresses); then the relay takes over without asking. Relay use is shown in the room UI.
-   - **Relay only (hide my IP):** a player option in the lobby. That player always goes through the relay, so the others never see its IP address (with peer to peer they can). Privacy notes: `PRIVACY.md`.
+Play is peer to peer: clients talk straight to the host's machine and no server runs the game. A small server of ours (`server/`, Go, plain UDP) only introduces the machines in a room and, when that fails, relays their packets. The game's netcode does not change: ENet runs end to end, direct or through the relay.
+
+1. **Rooms and the control channel.** The game talks to the server over a separate UDP socket (luasocket) with short text messages (`KG1 <verb> ...`), each retried until answered. A host `open`s a room and gets a 6-digit code and a secret; it then `poll`s every 250 ms, which keeps the room alive (gone 15 s after the last poll) and fetches who wants to join. A client `join`s with the code and then polls its join until the server says where to connect.
+2. **Address discovery (probes).** The server must learn the public `ip:port` of each machine's *game* socket, which only ENet uses. So the game makes an ENet connect attempt from that socket to the server, carrying a random 31-bit probe token in ENet's connect data; the server reads the sender address and the token from the raw packet and never answers (the game then resets that peer). The host repeats its probe every 10 s to keep its router mapping.
+3. **Hole punching.** The server gives the client the host's public and LAN game addresses and gives the host the client's. The client connects to both; the host makes connect attempts to both at the same time, which opens its router for the client's packets. The first connection to complete wins; the others, and any connection the punching itself completes, are reset.
+4. **Relay fallback.** If no direct connection is made in ~3 s, the client asks for the relay. The server opens a pair of UDP ports for that client: the client connects to the first as if it were the host, the host makes a connect attempt to the second, and from then on the relay copies datagrams between the two. Each end is accepted only after a connect packet carrying the token the server issued for it, and each pair is capped in rate and closed with its room or after 30 s of silence.
+   - **Relay only (hide my IP):** a player option in the lobby. That player always goes through the relay, so the others never see its IP address (with peer to peer they can). If the host chose it, every client of that room is relayed. Privacy notes: `PRIVACY.md`.
    - **Decided:** our own rendezvous + relay. Rejected: Epic Online Services P2P, Steam networking, UPnP, and VPN tools (Tailscale, ZeroTier, Hamachi). Players never set up port forwarding.
-3. **Room codes (Phase 3):** 6 digits, read out or pasted to a friend; made when the host opens the room, gone when the host leaves; no accounts needed.
-4. **IPv4 only.**
-5. **Port:** the game listens on UDP **26967** by default.
-6. **ENet** (bundled with LÖVE 11 as `require "enet"`) with three channels:
+5. **Room codes:** 6 digits, read out or pasted to a friend; made when the host opens the room, gone when the host leaves; no accounts needed. Join attempts per address are rate-limited so codes cannot be guessed.
+6. **IPv4 only.**
+7. **Port:** the game listens on UDP **26967** by default.
+8. **ENet** (bundled with LÖVE 11 as `require "enet"`) with three channels:
    - `0` unreliable, sequenced: player state updates and world snapshots.
    - `1` reliable: join/leave, votes, restart, full states.
    - `2` reliable: initial full state on join.
