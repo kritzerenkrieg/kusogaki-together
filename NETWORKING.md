@@ -269,7 +269,7 @@ Network load stays as small as possible; speed beats completeness.
 - **Only what changed.** States are deltas against what the client acknowledged; inputs are bit masks.
 - **Newest state, not history.** Unreliable updates are never resent; a lost one is replaced by the next. Only full states and session messages are reliable.
 - **Low, fixed rates.** Host states at **20 Hz**; client inputs every tick but only a few bytes each (8 masks).
-- **Quantized values.** Positions in 1/8 px, velocities in 1/16 px per tick.
+- **Exact values, compressed messages.** States are not quantized: a client restores the host's state and replays from it, so it must be the host's exact state (the hash covers every value). Instead, every message of 128 bytes or more travels LZ4-compressed when that is smaller (`core/net/protocol.lua`, Framing).
 - **Small packets.** Each packet fits one UDP datagram (well under the ~1200-byte safe MTU); a full snapshot that does not fit is split, never sent as one huge packet.
 
 ### Client → host (inputs)
@@ -279,7 +279,7 @@ Network load stays as small as possible; speed beats completeness.
 ### Host → clients (state)
 - Built: `core/net/statesync.lua`, `core/level/fullstate.lua`. After every 3rd tick (20 a second) the host saves its level's whole state and sends each client `snap{g, h, base, set, del, hash, ack, inp, vt, cd}`: the fields changed since the state that client acknowledged (`base`), or all of them (`base` 0, reliable; on join, restart, a lost base or a hash mismatch; at most once a second), with the newest input tick it has from that client (`ack`), the input every player used at tick h (`inp`, to predict the others) and the restart votes.
 - A state is a flat map of keys ("p.<id>.<field>", "e.<id>.<field>", "s.<name>") to plain values; references between objects are saved as ids.
-- **Measured (example level, 2 players):** full state about 30 KB; a delta over 3 ticks about 1–2 KB, so 20–35 KB/s per client. Over the budget below for 4 clients; shrinking it (quantized values, leaving out what the client can recompute) is planned.
+- **Measured (example level, 2 players, protocol 7):** full state about 7.4 KB compressed (29 KB raw); a delta over 3 ticks about 650 B compressed (1.3 KB raw), so 10–11 KB/s per client: about 45 KB/s host upload for 4 clients, within the budget. A host that claims a raw size over the message limit is refused before anything is decompressed.
 
 ### Interactions
 There is one simulation (the host's), so every interaction resolves the same way for everyone: stomps, kicks, explosions, blocks, props, grabbing and throwing, carrying players, checkpoints and the goal are the same rules as in local play. **Players push each other for real** (shared sideways push, as in local play). A client sees the result of its own actions at once (predicted) and other players' with the delay of their inputs; when a prediction was wrong the host's state corrects it.

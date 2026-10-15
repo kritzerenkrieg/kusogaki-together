@@ -23,6 +23,13 @@
 --                   client acknowledged (STATE) or full (base 0, RELIABLE);
 --                   core/net/statesync.lua
 -- A client acknowledges states in its input messages (k).
+--
+-- Framing: a message is its core/wire.lua bytes, or, when that is at least
+-- COMPRESS_MIN bytes and LZ4 makes it smaller, byte 255 then LÖVE's LZ4 data
+-- (uint32 little-endian raw size, then the compressed bytes). Wire values
+-- start with a tag 0..8, so the two never mix, and small messages (hello)
+-- stay plain: an older build still reads them and refuses the version.
+-- Decoding checks the raw size against the limit before decompressing.
 local wire = require("core.wire")
 local inputsync = require("core.net.inputsync")
 
@@ -36,6 +43,9 @@ protocol.MAX_HOST_MESSAGE = 1024 * 1024   -- bytes; a full world snapshot fits e
 protocol.MAX_PLAYERS = 5
 protocol.MAX_SEED = 2147483646
 protocol.MAX_REASON = 200
+protocol.COMPRESS_MIN = 128 -- bytes of wire data worth trying to compress
+
+local COMPRESSED = 255
 
 local function isInt(value, low, high)
     return type(value) == "number" and value % 1 == 0 and value >= low and value <= high
@@ -157,7 +167,14 @@ local SHAPES = {
 function protocol.encode(message)
     local ok, reason = protocol.check(message)
     assert(ok, reason)
-    return wire.encode(message)
+    local data = wire.encode(message)
+    if #data >= protocol.COMPRESS_MIN then
+        local packed = string.char(COMPRESSED) .. love.data.compress("string", "lz4", data, 9)
+        if #packed < #data then
+            return packed
+        end
+    end
+    return data
 end
 
 -- Is `message` a well-formed message? Returns true, or false and a reason.
@@ -190,6 +207,20 @@ function protocol.decode(data, maxSize)
     end
     if #data > maxSize then
         return nil, "message too large"
+    end
+    if data:byte(1) == COMPRESSED then
+        if #data < 6 then
+            return nil, "truncated message"
+        end
+        local size = love.data.unpack("<I4", data, 2)
+        if size > maxSize then
+            return nil, "message too large"
+        end
+        local ok, raw = pcall(love.data.decompress, "string", "lz4", data:sub(2))
+        if not ok or #raw ~= size then
+            return nil, "undecodable message"
+        end
+        data = raw
     end
     local message, err = wire.decode(data)
     if message == nil then

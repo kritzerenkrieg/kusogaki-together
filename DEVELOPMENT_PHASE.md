@@ -2,7 +2,7 @@
 
 Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Undecided choices are tracked in `OPEN_DECISION.md`. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
 
-Last updated: 2026-10-14 (Phase 1 complete; Phase 2 netcode switched to hybrid rollback and working in headless runs (v0.2.0); waiting for a play test by hand).
+Last updated: 2026-10-15 (Phase 1 complete; Phase 2 hybrid rollback netcode passed the LAN and by-hand play tests; state messages compressed (v0.2.1, protocol 7)).
 
 ---
 
@@ -154,9 +154,15 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 - Host + client on loopback: 5 of 450 inputs late, the client replays only now and then (528 simulation steps in 8 s, 480 of them its own ticks), both end with identical players and world.
 - Client at `--net-lag 150 --net-loss 5`: 1 of 424 inputs late, 515 steps in 8 s, identical end state; when the host's player starts running, the client corrects it by up to ~90 px, gliding.
 - 5 instances (host + 4 clients, two at 150 ms / 5%): all five end with the same players, 68 entities and 12 enemies. With five game processes sharing this one CPU about half the inputs arrived late (each late input is a correction); separate machines on a LAN should not have that.
-- Bandwidth: a full state is about 30 KB; deltas 1–2 KB per state, 20–35 KB/s per client. **Too much for 4 clients** (budget: under 100 KB/s host upload); shrinking it is the next netcode task.
+- Bandwidth before compression: a full state about 30 KB, deltas 1–2 KB, 20–35 KB/s per client.
 
-**Next:** the play test by hand (below), then shrink the state deltas, then carrying players and checkpoints get their own online tests.
+**Play tests (2026-10-15):**
+- Headless LAN run, host on 192.168.77.102 and client on 192.168.77.103 over Wi-Fi: joined in 0.16 s, 1 full state and 674 deltas, identical world hashes at 7 checkpoints, 4 of 674 predictions corrected, 8 of 2013 inputs late, round trip 21–27 ms once settled.
+- By hand, with lag and loss: passed.
+
+**State size (game 0.2.1, protocol 7):** messages of 128 bytes or more go LZ4-compressed (`core/net/protocol.lua`, Framing). Lossless, so restore, replay and the hash are unchanged. Example level: deltas 1.3 KB → 650 B, full state 29 KB → 7.4 KB. LAN rerun: host upload 20.5 → 10.0 KB/s per client, identical hashes, 4 of 676 predictions corrected; with 120 ms lag and 10% loss at both ends 10.9 KB/s, identical hashes, 6 of 532 corrected. Quantizing was ruled out: the client must restore the host's exact state.
+
+**Next:** carrying players and checkpoints get their own online tests.
 
 How to test online on one PC: `love2d . --host` in one terminal, then `love2d . --join 127.0.0.1` in others (up to 4); add `--net-lag 150 --net-loss 5` to any of them for a bad connection. On a LAN, join the host's IP (UDP port 26967).
 

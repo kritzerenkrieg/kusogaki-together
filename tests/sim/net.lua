@@ -39,6 +39,17 @@ do
         and refused({ t = "restart", seed = 5, generation = 1, players = { 1, 1 } }))
     check("garbage bytes are refused", protocol.decode("\7\255\255\255\255", 100) == nil
         and protocol.decode(("x"):rep(2000), 1024) == nil)
+    local long = { t = "reject", reason = ("ab"):rep(100) }
+    local packed = protocol.encode(long)
+    check("large messages travel compressed", packed:byte(1) == 255 and #packed < #wire.encode(long)
+        and protocol.decode(packed, 1024).reason == long.reason)
+    check("small messages stay plain", protocol.encode({ t = "left", id = 3 }) == wire.encode({ t = "left", id = 3 }))
+    local raw = love.data.compress("string", "lz4", ("\0"):rep(100000))
+    check("compressed messages are checked", protocol.decode("\255" .. raw, 1024) == nil
+        and protocol.decode("\255\5\0\0\0", 1024) == nil
+        and protocol.decode("\255" .. love.data.pack("string", "<I4", 10) .. raw:sub(5), 1024) == nil
+        and protocol.decode(packed:sub(1, -4), 1024) == nil
+        and protocol.decode(packed, 100) == nil)
     check("addresses", protocol.address("192.168.1.5") == "192.168.1.5:26967"
         and protocol.address("localhost:4000") == "localhost:4000"
         and protocol.address("a b") == nil and protocol.address("1.2.3.4:99999") == nil)
