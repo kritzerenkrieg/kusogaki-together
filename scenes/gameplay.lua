@@ -1023,7 +1023,7 @@ end
 
 sceneEngine.register("gameplay", {
     enter = function()
-        audio.playMusic("playground.wav")
+        audio.playMusic("playground.flac")
         if level then
             watchdog.enter(level.root)
         end

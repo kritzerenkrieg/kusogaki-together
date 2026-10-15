@@ -10,7 +10,7 @@ local audio = require("core.audio")
 local version = require("core.version")
 local playerConfig = require("core.player.config")
 
-local TITLE_MUSIC = "kusogaki.wav"
+local TITLE_MUSIC = "kusogaki.flac"
 
 local SPRITES = {
     kusogaki = "assets/graphics/entities/kusogaki.png", -- 32x32 frames, walk cycle on row 1
