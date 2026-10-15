@@ -11,6 +11,8 @@
 -- every frame; it never blocks and returns what to do next:
 --   host:   { address, data } connect attempts to punch (to a client or the relay)
 --   client: { address, data } addresses to try connecting to
+-- A host's polls also carry its room info (setInfo) for the public room list,
+-- which rendezvous.browse reads. Relay only is the host's choice.
 local socket = require("socket")
 
 local rendezvous = {}
@@ -25,6 +27,16 @@ local PROBE_EVERY = 10     -- s between a host's probes (keeps its router mappin
 local PROBE_RESET = 1      -- s a probe attempt lives
 local SERVER_SILENT = 6    -- s without any answer before giving up
 local CHANNELS = 3
+local LIST_EVERY = 2       -- s between room list requests
+local LIST_REQUEST_LEN = 256 -- bytes: the server answers shorter list requests with an error
+rendezvous.MAX_ROOM_NAME = 24
+
+-- A room or player name as the server and the other players take it:
+-- printable ASCII, single spaces, at most `maxLength` bytes.
+function rendezvous.cleanName(text, maxLength)
+    text = tostring(text or ""):gsub("[^\32-\126]", ""):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
+    return (text:sub(1, maxLength or rendezvous.MAX_ROOM_NAME):gsub(" $", ""))
+end
 
 -- "host[:port]" -> ip, port (resolving a name once), or nil and a reason.
 function rendezvous.resolve(text)
@@ -64,6 +76,7 @@ local function open(options)
     local self = setmetatable({
         udp = udp,
         enet = options.enet,
+        info = nil,      -- host: the room info sent with each poll
         serverIp = ip,
         server = ip .. ":" .. port,
         protocol = options.protocol,
@@ -211,12 +224,25 @@ function Host:update(now)
             self:send(("open %d %d %s %s"):format(self.protocol, self.probeToken, self.lan, self.relayOnly))
         end
     elseif self.state == "open" and self:due(now, POLL) then
-        self:send(("poll %s %s"):format(self.code, self.secret))
+        local info = self.info
+        if info then
+            self:send(("poll %s %s %d %d %d %d %s %s"):format(self.code, self.secret, info.players,
+                info.playing and 1 or 0, info.dropIn and 1 or 0, info.public and 1 or 0, info.level,
+                rendezvous.cleanName(info.name) ~= "" and rendezvous.cleanName(info.name) or "Room"))
+        else
+            self:send(("poll %s %s"):format(self.code, self.secret))
+        end
     end
     if self.state ~= "failed" and self:silent(now) then
         self:fail(self.state == "opening" and "could not reach the server" or "lost the server")
     end
     return actions
+end
+
+-- What the room list shows about this room, sent with every poll from now
+-- on: { players, playing, dropIn, public, level (a folder name), name }.
+function Host:setInfo(info)
+    self.info = info
 end
 
 -- Close the room (the server forgets it at once).
@@ -233,7 +259,7 @@ end
 local Client = setmetatable({}, Base)
 Client.__index = Client
 
--- options: server, code, protocol, relayOnly, enet. State: "joining" ->
+-- options: server, code, protocol, enet. State: "joining" ->
 -- "waiting" -> "direct" (trying the host's addresses; the relay after
 -- FALLBACK_SECONDS) or "relayed" -> "done" once connected; "failed" with
 -- `error`.
@@ -290,7 +316,8 @@ function Client:update(now, connected)
             self:probe(now)
         end
         if self:due(now, RESEND) then
-            self:send(("join %s %d %d %s %s"):format(self.code, self.protocol, self.probeToken, self.lan, self.relayOnly))
+            -- The relay is the host's choice: this field stays 0 (the server ignores it).
+            self:send(("join %s %d %d %s 0"):format(self.code, self.protocol, self.probeToken, self.lan))
         end
     elseif self.state == "waiting" then
         if now - self.lastProbe >= RESEND * 2 then
@@ -321,6 +348,94 @@ function Client:close()
     self:closeSocket()
     if self.state ~= "failed" then
         self.state = "closed"
+    end
+end
+
+-- ── Room list ─────────────────────────────────────────────────────────────
+
+local Browser = {}
+Browser.__index = Browser
+
+-- The public rooms of this protocol on `server`, a page at a time, asked for
+-- every LIST_EVERY seconds. Fields: rooms (list of { code, players, playing,
+-- dropIn, relay, level, name }), page, pages, state ("loading" | "ok" |
+-- "failed" with `error`). Returns the browser, or nil and a reason.
+function rendezvous.browse(server, protocol)
+    local ip, port = rendezvous.resolve(server)
+    if not ip then
+        return nil, port
+    end
+    local udp = socket.udp()
+    if not udp or not udp:setpeername(ip, port) then
+        return nil, "could not open a socket to the server"
+    end
+    udp:settimeout(0)
+    return setmetatable({
+        udp = udp, protocol = protocol, rooms = {}, page = 1, pages = 1,
+        state = "loading", lastSent = -math.huge, lastHeard = nil,
+    }, Browser)
+end
+
+-- Ask for page `page` now.
+function Browser:show(page)
+    self.page = page
+    self.lastSent = -math.huge
+end
+
+-- Ask again now (the list is otherwise refreshed every LIST_EVERY seconds).
+function Browser:refresh()
+    self.lastSent = -math.huge
+end
+
+function Browser:update(now)
+    if not self.udp then
+        return
+    end
+    while true do
+        local data = self.udp:receive()
+        if not data then
+            break
+        end
+        if data:sub(1, #MAGIC) == MAGIC then
+            local rooms, page, pages = {}, nil, nil
+            for line in (data:sub(#MAGIC + 1) .. "\n"):gmatch("([^\n]*)\n") do
+                local fields = {}
+                for field in line:gmatch("%S+") do
+                    fields[#fields + 1] = field
+                end
+                if fields[1] == "rooms" then
+                    page, pages = tonumber(fields[2]), tonumber(fields[3])
+                elseif fields[1] == "room" and #fields >= 8 then
+                    rooms[#rooms + 1] = {
+                        code = fields[2], players = tonumber(fields[3]) or 0,
+                        playing = fields[4] == "1", dropIn = fields[5] == "1", relay = fields[6] == "1",
+                        level = fields[7], name = table.concat(fields, " ", 8),
+                    }
+                elseif fields[1] == "error" then
+                    self.state, self.error = "failed", table.concat(fields, " ", 2)
+                end
+            end
+            if page then
+                self.rooms, self.page, self.pages, self.state, self.error = rooms, page, pages, "ok", nil
+            end
+            self.lastHeard = now
+        end
+    end
+    self.lastHeard = self.lastHeard or now
+    if now - self.lastHeard > SERVER_SILENT then
+        self.state, self.error = "failed", "could not reach the server"
+    end
+    if now - self.lastSent >= (self.state == "ok" and LIST_EVERY or RESEND) then
+        self.lastSent = now
+        local request = MAGIC .. ("list %d %d"):format(self.protocol, self.page)
+        self.udp:send(request .. (" "):rep(LIST_REQUEST_LEN - #request))
+    end
+end
+
+function Browser:close()
+    if self.udp then
+        self.udp:close()
+        self.udp = nil
     end
 end
 

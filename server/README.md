@@ -12,8 +12,8 @@ Last updated: 2026-10-15.
 
 | Module | What it does | Phase | Status |
 |---|---|---|---|
-| [`lobby/`](lobby/README.md) | Rooms with 6-digit codes, the control channel, probes (public address discovery), introductions for hole punching. Later: the public room list. | 3 (codes), 5 (public list) | **Built** (codes) |
-| [`relay/`](relay/README.md) | Copies datagrams between a client and a host that could not connect directly, or chose Relay only. | 3 | **Built** |
+| [`lobby/`](lobby/README.md) | Rooms with 6-digit codes, the public room list, the control channel, probes (public address discovery), introductions for hole punching. | 3 (codes), 5 (public list) | **Built** (codes) |
+| [`relay/`](relay/README.md) | Copies datagrams between a client and a host that could not connect directly, or whose host chose Relay only. | 3 | **Built** |
 | [`repository/`](repository/README.md) | Accounts, level uploads (validation, asset normalization, headless load test), storage and download. | 4 | Design only |
 | `cmd/kusogaki-server/` | The binary: one UDP port for the lobby, a port range for the relay. | 3 | **Built** |
 
@@ -45,7 +45,7 @@ go run ./cmd/kusogaki-server -addr :26968 -relay-ports 27000-27999
 | `-addr` | `:26968` | UDP address for the lobby: control messages and probes share it |
 | `-relay-ports` | `27000-27999` | UDP port range for relay pairs; two ports per relayed player |
 
-In the game, set **Server** in Host online / Join online to this machine's address (`host` or `host:port`; the port defaults to 26968). For a test on one PC: `127.0.0.1`.
+In the game, set **Server** in Multiplayer to this machine's address (`host` or `host:port`; the port defaults to 26968). For a test on one PC: `127.0.0.1`.
 
 ## Tests
 
@@ -71,6 +71,6 @@ cd server && go vet ./... && go test -race ./...
 |---|---|
 | Netcode, sessions, what the host sends | `../NETWORKING.md` |
 | How the game talks to the lobby and relay | `../NETWORKING.md` Connectivity, `../core/net/rendezvous.lua` |
-| Decisions (rendezvous + relay, codes, no encryption, Relay only) | `../OPEN_DECISION.md` |
+| Decisions (rendezvous + relay, codes, room list, no encryption, Relay only) | `../OPEN_DECISION.md` |
 | Progress | `../DEVELOPMENT_PHASE.md` |
 | What the server sees about players | `../PRIVACY.md` |

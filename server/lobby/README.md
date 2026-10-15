@@ -1,6 +1,6 @@
 # Lobby
 
-Rooms with 6-digit codes, and the introductions that let a client and a host connect peer to peer. Phase 3 (built). The public room list is Phase 5 (planned, below).
+Rooms with 6-digit codes, the public room list, and the introductions that let a client and a host connect peer to peer. Phase 3 (built). Accounts and downloaded levels in the list are Phase 5 (planned, below).
 
 Code: `lobby.go`. Tests: `lobby_test.go`. Game side: `../../core/net/rendezvous.lua`.
 
@@ -12,7 +12,7 @@ Code: `lobby.go`. Tests: `lobby_test.go`. Game side: `../../core/net/rendezvous.
 2. Both machines send a **probe** from their game socket (below), so the lobby learns each one's public `ip:port` as their routers map it. The host repeats its probe every 10 s to keep that mapping.
 3. The **client** joins with the code (`join`) and polls its join (`status`).
 4. Once both probes have arrived, the lobby **introduces** them: the client's `status` answers `direct <host public> <host LAN>`, and the host's poll lists `join <id> <client public> <client LAN>`. The client connects to both addresses; the host makes connect attempts to both at the same time, which opens its router for the client's packets (hole punching). The first connection to complete wins.
-5. If nothing connects within 3 s the client asks for the **relay** (`relay`): the lobby opens a relay pair (`../relay/`) and both get its ports and tokens. With **Relay only** (on either side) step 4 is skipped: the lobby never hands out either address and goes straight to the relay.
+5. If nothing connects within 3 s the client asks for the **relay** (`relay`): the lobby opens a relay pair (`../relay/`) and both get its ports and tokens. With **Relay only** (the host's choice when it opens the room) step 4 is skipped: the lobby never hands out either address and goes straight to the relay.
 6. Connected, the client sends `done` and the join is forgotten.
 
 ## Probes
@@ -28,16 +28,19 @@ UDP to the lobby port, one datagram each way, text: `KG1 <verb> <fields...>`, at
 | From | Request | Answer |
 |---|---|---|
 | host | `open <protocol> <probe> <lan> <relayOnly>` | `room <code> <secret>` |
-| host | `poll <code> <secret>` | `hosted <code>`, then one line per pending join: `join <id> <public> <lan>` (punch these) and/or `relay <id> <port> <token>` (punch the relay) |
+| host | `poll <code> <secret> [<players> <playing> <dropIn> <public> <level> <name...>]` | `hosted <code>`, then one line per pending join: `join <id> <public> <lan>` (punch these) and/or `relay <id> <port> <token>` (punch the relay) |
 | host | `close <code> <secret>` | `closed` |
 | client | `join <code> <protocol> <probe> <lan> <relayOnly>` | `joining <id> <secret>` |
 | client | `status <id> <secret>` | `wait`, `direct <public> <lan>` or `relay <port> <token>` |
 | client | `relay <id> <secret>` | as `status`, after opening a relay pair |
 | client | `done <id> <secret>` | `done` |
+| any | `list <protocol> <page>`, padded with spaces to at least 256 bytes | `rooms <page> <pages>`, then one line per room: `room <code> <players> <playing> <dropIn> <relay> <level> <name...>` |
 | any | anything wrong | `error <reason>` (shown to the player) |
 
 - `protocol` is the game's network protocol (`../../core/version.lua`); a join with another protocol than the room's is refused with "version mismatch: ...".
-- `lan` is the machine's LAN `ip:port` (for two players behind the same router) or `-`. `relayOnly` is `0` or `1`.
+- `lan` is the machine's LAN `ip:port` (for two players behind the same router) or `-`. `relayOnly` is `0` or `1`; a join's is ignored (games send `0`): only the host chooses the relay.
+- **Room info:** a host's polls carry what the list shows: players (1–5), whether a level is being played, drop-in, public (`0`/`1` each), the level (letters, digits, `_`, at most 32) and the room's name (printable ASCII, single spaces, at most 24 bytes). A join to a room with 5 players is refused with "the room is full", and to a playing room without drop-in with "the game has already started".
+- **The list** has the public rooms of the asking protocol, waiting rooms first, then by code, 6 a page; a page past the end gives the last. Private rooms are never listed and are joined by code. Requests shorter than 256 bytes are refused, so a reply (at most about 600 bytes) is never much larger than the request: the list cannot be used to amplify traffic toward a spoofed address.
 - Relay ports are on the lobby's own address, which the game already knows.
 - Codes, secrets and ids are random (`crypto/rand`); secrets and ids are 16 hex digits.
 
@@ -55,7 +58,7 @@ UDP to the lobby port, one datagram each way, text: `KG1 <verb> <fields...>`, at
 
 ---
 
-## Planned: public room list (Phase 5)
+## Planned: the room list with accounts (Phase 5)
 
 Moved here from `NETWORKING.md` (Public lobby). Needs accounts and the level repository (Phase 4), and HTTPS.
 

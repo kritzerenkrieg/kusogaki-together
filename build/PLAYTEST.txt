@@ -11,9 +11,13 @@ HOW TO START
            (No FUSE? Run it with --appimage-extract-and-run.)
 
 PLAYING TOGETHER
-  One player picks Host online in the menu and reads out the 6-digit room code
-  (it is also copied to the clipboard). Everyone else picks Join online and types
-  the code. Everyone needs the same build.
-  Relay only hides your IP address from the other players (a little more lag).
+  Set your name in Options first. One player picks Multiplayer, then Create room.
+  Everyone else picks Multiplayer and joins that room from the list (a private
+  room: Join by room ID, with the 6-digit ID the waiting room shows). In the
+  waiting room the host picks the level and presses Start. When the level is
+  over the host presses Enter to bring everyone back to the room.
+  Everyone needs the same build.
+  Relay only (when creating a room) hides everyone's IP address from the others
+  (a little more lag).
 
 The game starts fullscreen; ESC leaves a game.

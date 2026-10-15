@@ -128,11 +128,12 @@ Host.__index = Host
 -- Open a session. options:
 --   port      UDP port (default protocol.PORT); bind address options.bind (default "*")
 --   rendezvous  { server = "host[:port]", relayOnly } to open an internet room
---             (its code: host:room())
---   level     { name, fingerprint } of the level being played
+--             (its code: host:room(); its listing: host:setRoomInfo())
 --   handler   the game's side:
---     accept()            -> a free player id, or nil and a reason (session full)
---     welcome(id)         -> { seed, generation, players } once that client is in
+--     accept()            -> a free player id, or nil and a reason (session
+--                            full, game started)
+--     welcome(id, name)   that client is in the room (it got its id)
+--     has(id, fp)         its fingerprint of the room's level ("" without it)
 --     left(id)            a joined client left or timed out
 --     vote(id, on)        a joined client's player toggled its restart vote
 --     input(id, message)  a joined client's inputs (core/net/inputsync.lua)
@@ -159,11 +160,10 @@ function session.host(options)
         enet = enetHost,
         rendezvous = room,
         punches = {}, -- peer index -> true: connect attempts that only open this machine's router
-        level = options.level,
         handler = options.handler,
         game = version.GAME, -- versions this host plays (fixed when it opens)
         protocol = version.PROTOCOL,
-        peers = {}, -- peer index -> { peer, stage = "hello" | "ready" | "joined", id, since, states }
+        peers = {}, -- peer index -> { peer, stage = "hello" | "joined" | "refused", id, since }
         inbox = {}, -- events held back by the bad network simulator
     }, Host)
 end
@@ -188,24 +188,16 @@ local function hostReceive(self, entry, data)
             refuse(entry, ("version mismatch: host runs %s, you run %s"):format(self.game, message.game))
             return
         end
-        entry.stage = "ready"
-        send(entry.peer, { t = "level", name = self.level.name, fingerprint = self.level.fingerprint },
-            protocol.RELIABLE)
-    elseif entry.stage == "ready" and message.t == "ready" then
-        if message.fingerprint ~= self.level.fingerprint then
-            refuse(entry, "your copy of level " .. self.level.name .. " differs from the host's")
-            return
-        end
         local id, reason = self.handler.accept()
         if not id then
             refuse(entry, reason or "session is full")
             return
         end
         entry.id, entry.stage = id, "joined"
-        local info = self.handler.welcome(id)
-        send(entry.peer, { t = "welcome", you = id, seed = info.seed, generation = info.generation,
-            players = info.players }, protocol.RELIABLE)
-        self:broadcast({ t = "joined", id = id }, id)
+        send(entry.peer, { t = "welcome", you = id }, protocol.RELIABLE)
+        self.handler.welcome(id, message.name)
+    elseif entry.stage == "joined" and message.t == "has" then
+        self.handler.has(entry.id, message.fp)
     elseif entry.stage == "joined" and message.t == "vote" then
         self.handler.vote(entry.id, message.on)
     elseif entry.stage == "joined" and message.t == "input" then
@@ -280,7 +272,7 @@ function Host:service()
         end
     end
     for _, entry in pairs(self.peers) do -- empty once closed
-        if (entry.stage == "hello" or entry.stage == "ready") and now() - entry.since > HANDSHAKE_SECONDS then
+        if entry.stage == "hello" and now() - entry.since > HANDSHAKE_SECONDS then
             refuse(entry, "handshake took too long")
         end
     end
@@ -305,6 +297,26 @@ function Host:sendTo(id, message, unreliable)
         end
     end
     return false
+end
+
+-- Refuse the client playing player `id` with a reason and let it go.
+function Host:kick(id, reason)
+    for _, entry in pairs(self.peers) do
+        if entry.stage == "joined" and entry.id == id then
+            refuse(entry, reason)
+            self.handler.left(id)
+            self:broadcast({ t = "left", id = id })
+            return true
+        end
+    end
+    return false
+end
+
+-- What the server's room list shows about this room (rendezvous Host:setInfo).
+function Host:setRoomInfo(info)
+    if self.rendezvous then
+        self.rendezvous:setInfo(info)
+    end
 end
 
 -- The ids of the joined clients.
@@ -356,11 +368,12 @@ local Client = {}
 Client.__index = Client
 
 -- Connect to a host. `address` is "ip" or "ip:port", or nil with
--- options.rendezvous = { server, code, relayOnly } to join an internet room.
--- handler:
---   level(name, fingerprint) -> true when this machine has that level (else
---                               false and a reason)
---   welcome(message)           joined: { you, seed, generation, players }
+-- options.rendezvous = { server, code } to join an internet room.
+-- options.name is the player's name. handler:
+--   welcome(message)           in the room: { you }
+--   room(message)              the waiting room's state (core/net/protocol.lua)
+--   start(message)             play a level: { level, fp, seed, generation, players }
+--   toroom(message)            back to the waiting room
 --   restart(message)           { seed, generation, players }
 --   joined(id), left(id)       another player came or went
 --   snap(message)              the host's state (core/net/statesync.lua)
@@ -385,7 +398,8 @@ function session.join(address, handler, options)
         peer = nil,      -- the connection to the host, once one is made
         attempts = {},   -- peer index -> peer: connections being tried
         handler = handler,
-        stage = "connecting", -- "connecting" | "hello" | "ready" | "joined" | "closed"
+        name = options.name or "",
+        stage = "connecting", -- "connecting" | "hello" | "joined" | "closed"
         inbox = {},
         since = now(),
         reason = nil,
@@ -394,7 +408,7 @@ function session.join(address, handler, options)
         local err
         self.rendezvous, err = rendezvous.join({
             server = options.rendezvous.server, code = options.rendezvous.code,
-            relayOnly = options.rendezvous.relayOnly, protocol = version.PROTOCOL, enet = enetHost,
+            protocol = version.PROTOCOL, enet = enetHost,
         })
         if not self.rendezvous then
             enetHost:destroy()
@@ -439,9 +453,9 @@ local function clientClose(self, reason)
 end
 
 local CLIENT_EXPECTS = {
-    hello = { level = true },
-    ready = { welcome = true },
-    joined = { restart = true, joined = true, left = true, snap = true, ahead = true },
+    hello = { welcome = true },
+    joined = { room = true, start = true, toroom = true, restart = true, joined = true, left = true,
+        snap = true, ahead = true },
 }
 
 local function clientReceive(self, data)
@@ -459,22 +473,13 @@ local function clientReceive(self, data)
         clientClose(self, "the host sent an unexpected message: " .. message.t)
         return
     end
-    if message.t == "level" then
-        local ok, reason = self.handler.level(message.name, message.fingerprint)
-        if not ok then
-            send(self.peer, { t = "reject", reason = reason or "level not available" }, protocol.RELIABLE)
-            clientClose(self, reason or "level not available")
-            return
-        end
-        self.stage = "ready"
-        send(self.peer, { t = "ready", fingerprint = message.fingerprint }, protocol.RELIABLE)
-    elseif message.t == "welcome" then
+    if message.t == "welcome" then
         self.stage = "joined"
         self.handler.welcome(message)
     elseif message.t == "joined" or message.t == "left" then
         self.handler[message.t](message.id)
     elseif self.handler[message.t] then
-        self.handler[message.t](message) -- restart, snap, ahead
+        self.handler[message.t](message) -- room, start, toroom, restart, snap, ahead
     end
 end
 
@@ -511,7 +516,8 @@ function Client:service()
                 end
                 self.attempts = {}
                 self.stage, self.since = "hello", now()
-                send(self.peer, { t = "hello", protocol = version.PROTOCOL, game = version.GAME }, protocol.RELIABLE)
+                send(self.peer, { t = "hello", protocol = version.PROTOCOL, game = version.GAME, name = self.name },
+                    protocol.RELIABLE)
             elseif event.type == "connect" then
                 event.peer:reset() -- the host's punch got through: not our connection
             elseif event.type == "disconnect" and self.attempts[index] then
@@ -533,6 +539,14 @@ function Client:service()
     if self.stage ~= "joined" and self.stage ~= "closed" and not self:waiting()
         and now() - self.since > HANDSHAKE_SECONDS + 1 then
         clientClose(self, "could not connect to the host")
+    end
+end
+
+-- Tell the host the fingerprint of this machine's copy of the room's level
+-- ("" without one).
+function Client:has(fp)
+    if self.stage == "joined" then
+        send(self.peer, { t = "has", fp = fp }, protocol.RELIABLE)
     end
 end
 

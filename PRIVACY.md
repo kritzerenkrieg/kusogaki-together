@@ -15,7 +15,9 @@ Last updated: 2026-10-15.
 The rendezvous keeps addresses, codes and tokens only while the room is open and forgets them when the host leaves. The relay forwards packets and keeps nothing. Neither writes your address to a log.
 
 ### What other players see
-Play is peer to peer: the machines in a room talk to each other directly. **Players in your room can see your IP address** (in practice, the host's address is visible to everyone who joins). To hide yours, turn on **Relay only** in the lobby: your traffic then goes through our relay and the other players see only the relay's address.
+Play is peer to peer: the machines in a room talk to each other directly. **The host of a room can see the IP address of everyone who joins, and they can see the host's.** A host can turn on **Relay only** when creating a room: everyone's traffic then goes through our relay and nobody in the room sees another player's address. The room list shows which rooms are relayed, so you can pick one.
+
+The server's public room list shows what a host chose to show: the room's name, its level, how many players are in it and whether a level is being played. It is kept in memory while the room is open, like the rest. Private rooms are left out of the list.
 
 ### What is never collected
 - No gameplay recording, replays or session logs.

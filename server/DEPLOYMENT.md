@@ -97,9 +97,9 @@ Point an `A` record (for example `play.<your domain>`) at the VPS's IPv4 address
 
 From your own machine:
 
-1. Host online with Server set to the VPS; the room code shows at the top.
-2. Join online from a machine on **another network** (a phone hotspot is the easiest) with that code.
-3. Try both again with **Relay only** on.
+1. Multiplayer with Server set to the VPS, then Create room; the waiting room shows the room ID.
+2. Multiplayer from a machine on **another network** (a phone hotspot is the easiest): the room is in the list; join it.
+3. Try again with a room created with **Relay only** on (the list says "relayed").
 4. On the VPS: `journalctl -u kusogaki-server -f` shows "room … opened", "relay … for room …", "room … closed".
 
 Before that, from any machine with LÖVE: `KUSOGAKI_SERVER=<vps address> love . --sim-test` runs the online checks against the deployed server (rooms, codes, direct, relay only, fallback to the relay). Both test sides run on that one machine, so their direct path is the LAN; it proves the server is reachable and the relay ports are open, not hole punching.

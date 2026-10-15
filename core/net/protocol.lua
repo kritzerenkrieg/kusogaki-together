@@ -5,13 +5,22 @@
 -- (Session flow).
 --
 -- Join handshake (channel RELIABLE):
---   client -> host  hello  { protocol, game }       versions
---   host -> client  level  { name, fingerprint }    the level to load
---   client -> host  ready  { fingerprint }          "I have that level"
---   host -> client  welcome { you, seed, generation, players }
--- then the host's world arrives as a full world message (below).
+--   client -> host  hello  { protocol, game, name }  versions, the player's name
+--   host -> client  welcome { you }                   its player id
 -- Either side may answer with reject { reason } and disconnect.
--- Session messages afterwards: restart, joined, left (host -> clients);
+--
+-- The room (the waiting room before and between levels, scenes/room.lua):
+--   host -> client  room { name, code, level, fp, st, cd, di, pub, relay, players }
+--                   everything the waiting room shows, sent on every change;
+--                   st "waiting" | "countdown" (cd seconds left) | "playing";
+--                   players = { { id, name, has } }
+--   client -> host  has { fp }   the fingerprint of its copy of the room's
+--                                level, or "" without one
+--   host -> client  start { level, fp, seed, generation, players }   play that
+--                   level (everyone at the end of a countdown; a player
+--                   dropping in, alone)
+--   host -> client  toroom { generation }   back to the waiting room
+-- Session messages while playing: restart, joined, left (host -> clients);
 -- vote (client -> host: its player's restart vote).
 --
 -- Hybrid rollback (NETWORKING.md), every message stamped with the level
@@ -58,6 +67,10 @@ local function isText(value, maxLength)
     return type(value) == "string" and #value <= maxLength
 end
 
+local function isList(value, maxLength)
+    return type(value) == "table" and #value <= maxLength and next(value, #value > 0 and #value or nil) == nil
+end
+
 local function isFingerprint(value)
     return type(value) == "string" and #value == 64 and value:match("^%x+$") ~= nil
 end
@@ -77,11 +90,27 @@ local function isPlayerList(value)
 end
 
 local isGeneration = function(value) return isInt(value, 0, 2 ^ 31) end
-local isSeq = function(value) return isInt(value, 0, 2 ^ 31) end
+local isLevelName = function(value) return isText(value, 64) and value:match("^[%w_]+$") ~= nil end
+protocol.MAX_NAME = 16 -- a player's name
+protocol.MAX_ROOM_NAME = 24
 
-local function isList(value, maxLength)
-    return type(value) == "table" and #value <= maxLength and next(value, #value > 0 and #value or nil) == nil
+local function isName(value, maxLength)
+    return isText(value, maxLength) and value:match("^[\32-\126]*$") ~= nil
 end
+
+local function isRoster(value)
+    if not isList(value, protocol.MAX_PLAYERS) then
+        return false
+    end
+    for _, entry in ipairs(value) do
+        if type(entry) ~= "table" or not isInt(entry.id, 1, protocol.MAX_PLAYERS)
+            or not isName(entry.name, protocol.MAX_NAME) or type(entry.has) ~= "boolean" then
+            return false
+        end
+    end
+    return true
+end
+local isSeq = function(value) return isInt(value, 0, 2 ^ 31) end
 
 local MAX_KEYS = 100000
 
@@ -152,16 +181,34 @@ end
 -- Field checks per message type. Messages a side does not expect are refused
 -- by the session, not here.
 local SHAPES = {
-    hello = { protocol = function(v) return isInt(v, 0, 65535) end, game = function(v) return isText(v, 32) end },
-    level = { name = function(v) return isText(v, 64) and v:match("^[%w_]+$") ~= nil end, fingerprint = isFingerprint },
-    ready = { fingerprint = isFingerprint },
+    hello = {
+        protocol = function(v) return isInt(v, 0, 65535) end,
+        game = function(v) return isText(v, 32) end,
+        name = function(v) return isName(v, protocol.MAX_NAME) end,
+    },
     reject = { reason = function(v) return isText(v, protocol.MAX_REASON) end },
-    welcome = {
-        you = function(v) return isInt(v, 1, protocol.MAX_PLAYERS) end,
+    welcome = { you = function(v) return isInt(v, 1, protocol.MAX_PLAYERS) end },
+    room = {
+        name = function(v) return isName(v, protocol.MAX_ROOM_NAME) end,
+        code = function(v) return v == "" or (type(v) == "string" and v:match("^%d%d%d%d%d%d$") ~= nil) end,
+        level = isLevelName,
+        fp = isFingerprint,
+        st = function(v) return v == "waiting" or v == "countdown" or v == "playing" end,
+        cd = function(v) return isInt(v, 0, 10) end,
+        di = function(v) return type(v) == "boolean" end,
+        pub = function(v) return type(v) == "boolean" end,
+        relay = function(v) return type(v) == "boolean" end,
+        players = isRoster,
+    },
+    has = { fp = function(v) return v == "" or isFingerprint(v) end },
+    start = {
+        level = isLevelName,
+        fp = isFingerprint,
         seed = function(v) return isInt(v, 1, protocol.MAX_SEED) end,
         generation = isGeneration,
         players = isPlayerList,
     },
+    toroom = { generation = isGeneration },
     restart = {
         seed = function(v) return isInt(v, 1, protocol.MAX_SEED) end,
         generation = isGeneration,

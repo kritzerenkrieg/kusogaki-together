@@ -13,6 +13,8 @@ local text = require("core.text")
 
 require("scenes.title_screen")
 require("scenes.lobby")
+require("scenes.room")
+local options = require("scenes.options")
 
 local NOTICE_SECONDS = 10
 local noticeTime = 0 -- seconds left showing why the last run was closed
@@ -23,6 +25,7 @@ function love.load()
         noticeTime = NOTICE_SECONDS
     end
     render.load()
+    options.load()
 
     local titleScreen = require("scenes.title_screen")
     titleScreen.load()

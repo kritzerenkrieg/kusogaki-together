@@ -30,10 +30,9 @@ local quads = { kusogaki = {}, dodon = {} }
 -- ---- Menu ----
 local selectedOption = 1
 local options = {
-    { label = "Play" },
-    { label = "Host online", lobby = "host" },
-    { label = "Join online", lobby = "join" },
-    { label = "Options" },
+    { label = "Singleplayer" },
+    { label = "Multiplayer", scene = "lobby" },
+    { label = "Options", scene = "options" },
     { label = "Exit" },
 }
 
@@ -310,8 +309,8 @@ function titleScreen.update(delta)
     updateParade(delta)
 end
 
--- Scene for the selected option: play, the online lobby, nothing yet
--- (options), or exit.
+-- Scene for the selected option: play alone, Multiplayer (the room list),
+-- options, or exit.
 local function activate()
     local option = options[selectedOption]
     if selectedOption == 1 then
@@ -322,13 +321,15 @@ local function activate()
             gameplay.load()
         end
         return "gameplay"
-    elseif option.lobby then
-        require("scenes.lobby").open(option.lobby)
+    elseif option.scene == "lobby" then
+        require("scenes.lobby").open()
         return "lobby"
+    elseif option.scene then
+        return option.scene
     elseif selectedOption == #options then
         return "exit"
     end
-    return nil -- options screen not built yet
+    return nil
 end
 
 -- Hovering an option selects it.
@@ -374,6 +375,7 @@ end
 
 sceneEngine.register("menu", {
     enter = function()
+        require("scenes.gameplay").closeNetwork() -- back from network play: the session ends
         audio.playMusic(TITLE_MUSIC)
         menuTime = FADE_IN -- shown at once; only the intro's end fades it in
     end,

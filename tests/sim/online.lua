@@ -20,7 +20,7 @@ do
     socketHost:destroy()
 end
 
--- The lobby: typing a code and a server, the relay switch, starting.
+-- Multiplayer: the room list, creating a room, joining by room ID.
 do
     local lobby = require("scenes.lobby")
     local gameplay = require("scenes.gameplay")
@@ -36,38 +36,55 @@ do
     end
     files["online.txt"] = "server=10.0.0.9:4000\nrelayOnly=0\n"
 
-    lobby.open("join")
-    check("the lobby remembers the server", lobby.state().settings.server == "10.0.0.9:4000")
+    lobby.open()
+    local state = lobby.state()
+    check("Multiplayer opens the room list on the remembered server", state.page == "list"
+        and state.settings.server == "10.0.0.9:4000" and state.browser ~= nil)
+    check("an old online.txt gets the defaults", state.settings.public and state.settings.dropIn
+        and not state.settings.relayOnly)
+
+    lobby.keypressed("return") -- Create room (no rooms listed)
+    check("the room list draws", pcall(lobby.draw))
+    check("Create room opens its page", lobby.state().page == "create")
+    check("the create page draws", pcall(lobby.draw))
+    lobby.textinput("Friday\tfun")
+    check("the room name takes printable text", lobby.state().settings.roomName == "Fridayfun",
+        lobby.state().settings.roomName)
+    lobby.keypressed("down")
+    lobby.keypressed("return")
+    lobby.keypressed("down")
+    lobby.keypressed("down")
+    lobby.keypressed("return")
+    check("the switches toggle and are kept", not lobby.state().settings.public
+        and lobby.state().settings.relayOnly and files["online.txt"]:match("public=0") ~= nil
+        and files["online.txt"]:match("relayOnly=1") ~= nil)
+    check("Esc goes back to the list", lobby.keypressed("escape") == nil and lobby.state().page == "list")
+
+    lobby.keypressed("down")
+    lobby.keypressed("return") -- Join by room ID
+    check("Join by room ID opens its page", lobby.state().page == "code")
     lobby.textinput("12a34")
     lobby.textinput("5678")
-    check("a room code takes 6 digits only", lobby.state().code == "123456", lobby.state().code)
+    check("a room ID takes 6 digits only", lobby.state().code == "123456", lobby.state().code)
     lobby.keypressed("backspace")
     lobby.textinput("9")
     check("backspace erases a digit", lobby.state().code == "123459")
     lobby.keypressed("down")
-    lobby.keypressed("return")
-    check("the relay switch toggles and is kept", lobby.state().settings.relayOnly
-        and files["online.txt"]:match("relayOnly=1") ~= nil)
-    lobby.keypressed("down")
-    for _ = 1, 20 do lobby.keypressed("backspace") end
-    lobby.keypressed("down")
-    check("no server: the lobby says so", lobby.keypressed("return") == nil
-        and lobby.state().notice ~= nil)
-    lobby.keypressed("up")
-    lobby.textinput("127.0.0.1:9")
-    lobby.keypressed("down")
     local nextScene = lobby.keypressed("return")
-    check("join starts network play as a client of that room", nextScene == "gameplay"
-        and gameplay.getMode() == "client" and gameplay.getNetwork() ~= nil
-        and files["online.txt"]:match("server=127.0.0.1:9") ~= nil, tostring(nextScene))
+    check("joining goes to the waiting room as a client", nextScene == "room"
+        and gameplay.getMode() == "client" and gameplay.getNetwork() ~= nil, tostring(nextScene))
     gameplay.closeNetwork()
+
+    lobby.open()
+    lobby.state().settings.server = ""
+    lobby.keypressed("return")
+    for _ = 1, 4 do lobby.keypressed("down") end
+    check("no server: Create says so", lobby.keypressed("return") == nil and lobby.state().notice ~= nil)
+    check("back on the list, Esc goes to the menu", lobby.keypressed("escape") == nil
+        and lobby.keypressed("escape") == "menu")
     gameplay.configure({})
     gameplay.load()
     check("back to playing alone", gameplay.getMode() == nil and gameplay.getNetwork() == nil)
-
-    lobby.open("host")
-    check("the host screen has no code field", lobby.state().selected == 1
-        and lobby.keypressed("escape") == "menu")
     love.filesystem.read, love.filesystem.write = realRead, realWrite
 end
 
@@ -148,8 +165,8 @@ do
 
     local viaRelay = newClient(code, true)
     pump({ host, direct.client, viaRelay.client }, function() return viaRelay.welcome or viaRelay.closed end)
-    check("relay only: the client connects through the relay", relayed(viaRelay, PORT),
-        tostring(viaRelay.closed) .. " " .. via(viaRelay))
+    check("only the host chooses the relay: a client asking for it connects directly",
+        viaRelay.welcome and not relayed(viaRelay, PORT), tostring(viaRelay.closed) .. " " .. via(viaRelay))
 
     -- Direct attempts that cannot work: after FALLBACK_SECONDS the relay.
     local realJoin = rendezvous.join
@@ -193,6 +210,43 @@ do
     local late = newClient(code)
     pump({ late.client }, function() return late.closed end)
     check("a closed room is gone", late.closed == "no such room", tostring(late.closed))
+end
+
+-- The room list: a public room shows with its info, a private one does not.
+do
+    local host = newHost(PORT + 2)
+    local hidden = newHost(PORT + 3)
+    local code = openRoom(host)
+    openRoom(hidden)
+    host:setRoomInfo({ players = 2, playing = true, dropIn = false, public = true, level = "example",
+        name = "  Friday\n night " })
+    hidden:setRoomInfo({ players = 1, playing = false, dropIn = true, public = false, level = "example", name = "Secret" })
+    local browser = assert(rendezvous.browse(SERVER, version.PROTOCOL))
+    local found
+    local deadline = love.timer.getTime() + 3
+    while love.timer.getTime() < deadline and not found do
+        host:service()
+        hidden:service()
+        browser:update(love.timer.getTime())
+        for _, entry in ipairs(browser.rooms) do
+            if entry.code == code and entry.name == "Friday night" then found = entry end
+        end
+        love.timer.sleep(0.01)
+    end
+    check("the room list shows a public room's name, level, players and state", found and found.players == 2
+        and found.level == "example" and found.playing and not found.dropIn and not found.relay)
+    local listed = false
+    for _, entry in ipairs(browser.rooms) do
+        if entry.name == "Secret" then listed = true end
+    end
+    check("a private room is not listed", not listed)
+    local late = newClient(code)
+    pump({ host, late.client }, function() return late.closed end)
+    check("a playing room without drop-in refuses joins", late.closed == "the game has already started",
+        tostring(late.closed))
+    browser:close()
+    host:close()
+    hidden:close()
 end
 
 do

@@ -35,8 +35,19 @@ do
     end
     check("bad messages are refused", refused({ t = "left", id = 9 }) and refused({ t = "nope" })
         and refused({ t = "left", id = 2, extra = true }) and refused("text")
-        and refused({ t = "welcome", you = 1, seed = 0, generation = 0, players = {} })
-        and refused({ t = "restart", seed = 5, generation = 1, players = { 1, 1 } }))
+        and refused({ t = "welcome", you = 9 })
+        and refused({ t = "restart", seed = 5, generation = 1, players = { 1, 1 } })
+        and refused({ t = "hello", protocol = 9, game = "x", name = "new\nline" })
+        and refused({ t = "has", fp = "abc" })
+        and refused({ t = "room", name = "r", code = "12345", level = "example", fp = ("ab"):rep(32), st = "waiting",
+            cd = 0, di = true, pub = true, relay = false, players = {} })
+        and refused({ t = "room", name = "r", code = "", level = "example", fp = ("ab"):rep(32), st = "waiting",
+            cd = 0, di = true, pub = true, relay = false, players = { { id = 1, name = "a", has = "yes" } } }))
+    check("room messages decode", protocol.decode(protocol.encode({ t = "room", name = "Bob's room", code = "123456",
+        level = "example", fp = ("ab"):rep(32), st = "countdown", cd = 3, di = false, pub = true, relay = true,
+        players = { { id = 1, name = "Bob", has = true }, { id = 2, name = "Al", has = false } } }), 1000) ~= nil
+        and protocol.decode(protocol.encode({ t = "start", level = "example", fp = ("ab"):rep(32), seed = 4,
+        generation = 2, players = { 1, 2 } }), 1000) ~= nil)
     check("garbage bytes are refused", protocol.decode("\7\255\255\255\255", 100) == nil
         and protocol.decode(("x"):rep(2000), 1024) == nil)
     local long = { t = "reject", reason = ("ab"):rep(100) }
@@ -71,11 +82,10 @@ do
     level:addPlayer(playerModule.new(100, 100))
     local fingerprint = levelpack.fingerprint("levels/example")
     local generation = 3
-    local left = {}
+    local left, names, has = {}, {}, {}
     local host = assert(session.host({
         port = PORT,
         bind = "127.0.0.1",
-        level = { name = "example", fingerprint = fingerprint },
         handler = {
             accept = function()
                 if #level.players >= Level.MAX_PLAYERS then
@@ -83,55 +93,54 @@ do
                 end
                 return #level.players + 1
             end,
-            welcome = function(id)
+            welcome = function(id, name)
                 level:addPlayer(playerModule.new(200, 100), id)
-                local ids = {}
-                for _, player in ipairs(level.players) do ids[#ids + 1] = player.id end
-                return { seed = level.seed, generation = generation, players = ids }
+                names[id] = name
             end,
+            has = function(id, fp) has[id] = fp end,
             left = function(id) left[#left + 1] = id end,
         },
     }))
     check("a second host cannot take the same port", session.host({ port = PORT, bind = "127.0.0.1",
-        level = { name = "example", fingerprint = fingerprint }, handler = {} }) == nil)
+        handler = {} }) == nil)
 
     -- A client that records what it gets.
     local function newClient(options)
         options = options or {}
         local got = { joined = {}, left = {} }
         got.client = assert(session.join("127.0.0.1:" .. PORT, {
-            level = function(name, print)
-                got.level = name
-                if options.wrongLevel then return false, "missing level" end
-                return true
-            end,
             welcome = function(message) got.welcome = message end,
             restart = function(message) got.restart = message end,
             joined = function(id) got.joined[#got.joined + 1] = id end,
             left = function(id) got.left[#got.left + 1] = id end,
             closed = function(reason) got.closed = reason end,
-        }))
+        }, { name = options.name }))
         return got
     end
 
-    local first = newClient()
+    local first = newClient({ name = "Ann" })
     pump({ host, first.client }, function() return first.welcome ~= nil end)
-    check("a client joins: level, welcome with the seed, generation and players",
-        first.level == "example" and first.welcome and first.welcome.you == 2 and first.welcome.seed == 4242
-        and first.welcome.generation == 3 and #first.welcome.players == 2, tostring(first.closed))
+    check("a client joins: welcome with its player id, the host learns its name",
+        first.welcome and first.welcome.you == 2 and names[2] == "Ann", tostring(first.closed))
+    first.client:has(fingerprint)
+    pump({ host, first.client }, function() return has[2] ~= nil end)
+    check("a client tells the host which level copy it has", has[2] == fingerprint)
 
     local second = newClient()
-    pump({ host, first.client, second.client }, function() return second.welcome ~= nil and #first.joined == 1 end)
-    check("others hear about a new player", second.welcome and second.welcome.you == 3 and first.joined[1] == 3)
+    pump({ host, first.client, second.client }, function() return second.welcome ~= nil end)
+    check("a second client gets the next id", second.welcome and second.welcome.you == 3 and names[3] == "")
 
     host:broadcast({ t = "restart", seed = 99, generation = 4, players = { 1, 2, 3 } })
     pump({ host, first.client, second.client }, function() return first.restart and second.restart end)
     check("restart{seed} reaches every client", first.restart and first.restart.seed == 99
         and second.restart and second.restart.generation == 4)
 
-    local wrong = newClient({ wrongLevel = true })
-    pump({ host, wrong.client }, function() return wrong.closed ~= nil end)
-    check("a client without the level stops with a reason", wrong.closed == "missing level")
+    host:kick(3, "you do not have the host's level")
+    pump({ host, first.client, second.client }, function() return second.closed ~= nil and #first.left == 1 end)
+    check("a kicked client stops with the reason, the others hear it left",
+        second.closed == "you do not have the host's level" and first.left[1] == 3 and left[1] == 3)
+    second = newClient()
+    pump({ host, first.client, second.client }, function() return second.welcome ~= nil end)
 
     -- A client with a different game version is refused by the host.
     local realGame = version.GAME
@@ -162,8 +171,9 @@ do
     raw:destroy()
 
     second.client:close()
-    pump({ host, first.client }, function() return #left == 1 and #first.left == 1 end)
-    check("leaving is noticed by the host and the others", left[1] == 3 and first.left[1] == 3)
+    pump({ host, first.client }, function() return #left == 2 and #first.left == 2 end)
+    check("leaving is noticed by the host and the others", left[2] == 4 and first.left[2] == 4,
+        tostring(left[2]) .. " " .. tostring(first.left[2]))
 
     host:close()
     pump({ first.client }, function() return first.closed ~= nil end)
@@ -179,10 +189,9 @@ do
     local votes, states = {}, 0
     local host = assert(session.host({
         port = PORT + 2, bind = "127.0.0.1",
-        level = { name = "example", fingerprint = levelpack.fingerprint("levels/example") },
         handler = {
             accept = function() return 2 end,
-            welcome = function() return { seed = 4, generation = 1, players = { 1, 2 } } end,
+            welcome = function() end,
             left = function() end,
             vote = function(_, on) votes[#votes + 1] = { on = on, at = love.timer.getTime() } end,
             input = function() states = states + 1 end,
@@ -190,7 +199,6 @@ do
     }))
     local joined = false
     local client = assert(session.join("127.0.0.1:" .. (PORT + 2), {
-        level = function() return true end,
         welcome = function() joined = true end,
         closed = function() end,
     }))
@@ -336,9 +344,14 @@ do
     check("the scene hosts a session", gameplay.getNetwork() ~= nil)
     gameplay.setSource(1, { read = function() return {} end })
     local got = { snaps = {} }
-    local client = assert(session.join("127.0.0.1:" .. (PORT + 1), {
-        level = function() return true end,
+    local client
+    client = assert(session.join("127.0.0.1:" .. (PORT + 1), {
         welcome = function(message) got.welcome = message end,
+        room = function(message)
+            got.room = message
+            client:has(message.fp)
+        end,
+        start = function(message) got.start = message end,
         restart = function() end,
         joined = function() end,
         left = function() end,
@@ -355,7 +368,9 @@ do
         end
         return false
     end
-    run(400, function() return got.welcome ~= nil and #got.snaps > 0 end)
+    run(400, function() return got.start ~= nil and #got.snaps > 0 end)
+    check("--host plays at once: a joining client drops in", got.room and got.room.st == "playing"
+        and got.start and got.start.level == "example" and #got.start.players == 2, tostring(got.closed))
     check("a joined client gets the host's full state", got.snaps[1] and got.snaps[1].base == 0
         and #got.snaps[1].set > 100, tostring(got.closed))
     local level = gameplay.getLevel()
@@ -379,7 +394,7 @@ do
         early = math.max(early, snap.ack - snap.h)
         inputsync.record(own, t, right)
         local message = inputsync.message(own, t)
-        message.g, message.k = got.welcome.generation, got.snaps[#got.snaps].h
+        message.g, message.k = got.start.generation, got.snaps[#got.snaps].h
         client:sendInput(message)
         run(1)
     end
@@ -402,6 +417,101 @@ do
     client:close()
     run(60)
     check("the scene notices the client leaving", #gameplay.getLevel().players == 1)
+    gameplay.closeNetwork()
+    gameplay.configure({ mode = nil })
+end
+
+-- ── The waiting room: level choice, the countdown, starting, back to the room ─
+do
+    local gameplay = require("scenes.gameplay")
+    gameplay.configure({ mode = "host", port = PORT + 3, bind = "127.0.0.1", level = "example", name = "Hosty",
+        room = { name = "Test room", dropIn = false, public = true } })
+    gameplay.load()
+    check("a room host waits in the room", gameplay.getLevel() == nil and gameplay.getNetwork() ~= nil)
+    gameplay.setSource(1, { read = function() return {} end })
+
+    local function newClient(name, claim)
+        local got = { rooms = 0 }
+        got.client = assert(session.join("127.0.0.1:" .. (PORT + 3), {
+            welcome = function(message) got.welcome = message end,
+            room = function(message)
+                got.room, got.rooms = message, got.rooms + 1
+                got.client:has(claim and claim(message) or levelpack.fingerprint("levels/" .. message.level))
+            end,
+            start = function(message) got.start = message end,
+            toroom = function(message) got.toroom = message end,
+            restart = function() end, joined = function() end, left = function() end,
+            snap = function() end, ahead = function() end,
+            closed = function(reason) got.closed = reason end,
+        }, { name = name }))
+        return got
+    end
+    local clients = {}
+    local function run(frames, done)
+        for _ = 1, frames do
+            gameplay.update(1 / 60)
+            for _, got in ipairs(clients) do got.client:service() end
+            if done and done() then return true end
+            love.timer.sleep(0.002)
+        end
+        return false
+    end
+
+    local missing = false
+    local ann = newClient("Ann", function(message) return missing and "" or levelpack.fingerprint("levels/" .. message.level) end)
+    clients[1] = ann
+    run(300, function() return ann.room and #ann.room.players == 2 and ann.room.players[2].has end)
+    local roomScene = require("scenes.room")
+    local drawn, err = pcall(roomScene.draw)
+    check("the waiting room draws (host)", drawn, tostring(err))
+    roomScene.keypressed("right")
+    check("Right on Level picks the next level", (gameplay.getRoom()) and select(1, gameplay.getRoom()).level ~= nil)
+    roomScene.keypressed("left")
+    local room = ann.room
+    check("the room reaches a joining player: name, level, players and their names", room
+        and room.name == "Test room" and room.level == "example" and room.st == "waiting" and not room.di
+        and room.players[1].name == "Hosty" and room.players[2].name == "Ann" and room.players[2].has,
+        room and (room.name .. " " .. room.st))
+
+    gameplay.roomAction("level", 1)
+    run(300, function() return ann.room.level ~= "example" and ann.room.players[2].has end)
+    check("the host changes the level; players say whether they have it", ann.room.level == "topdown"
+        and ann.room.players[2].has)
+    gameplay.roomAction("level", -1)
+    missing = true
+    run(300, function() return ann.room.level == "example" and not ann.room.players[2].has end)
+    local ok, reason = gameplay.roomAction("start")
+    check("no start while someone lacks the level", not ok and reason ~= nil and not ann.room.players[2].has)
+    missing = false
+    gameplay.roomAction("dropIn")
+    gameplay.roomAction("dropIn")
+    run(300, function() return ann.room.players[2].has end)
+
+    check("the host starts the countdown", gameplay.roomAction("start"))
+    run(60, function() return ann.room.st == "countdown" end)
+    check("players see the countdown", ann.room.st == "countdown" and ann.room.cd == 3, ann.room.cd)
+    local roomScene = require("scenes.room")
+    local drawn, err = pcall(roomScene.draw)
+    check("the waiting room draws (host, counting down)", drawn, tostring(err))
+    run(400, function() return ann.start ~= nil end)
+    local level = gameplay.getLevel()
+    check("at the end of the countdown everyone plays the room's level", ann.start and level
+        and ann.start.level == "example" and #ann.start.players == 2 and #level.players == 2)
+
+    local bob = newClient("Bob")
+    clients[2] = bob
+    run(300, function() return bob.closed ~= nil end)
+    check("without drop-in a playing room refuses joins", bob.closed == "the game has already started",
+        tostring(bob.closed))
+    table.remove(clients, 2)
+
+    check("the host takes everyone back to the room", gameplay.backToRoom())
+    run(300, function() return ann.toroom ~= nil and ann.room.st == "waiting" end)
+    check("players go back to the room with it", ann.toroom and ann.room.st == "waiting"
+        and gameplay.getLevel() == nil and ann.toroom.generation > ann.start.generation)
+
+    ann.client:close()
+    run(60)
     gameplay.closeNetwork()
     gameplay.configure({ mode = nil })
 end

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,12 +14,14 @@ import (
 	"kusogaki-together/server/relay"
 )
 
-// Package lobby is the rendezvous: rooms with 6-digit codes, the control channel and probes
-// (NETWORKING.md, Connectivity). Control messages are one line of text,
-// "KG1 <verb> <fields...>", answered with one datagram:
+// Package lobby is the rendezvous: rooms with 6-digit codes, the public room
+// list, the control channel and probes (NETWORKING.md, Connectivity). Control
+// messages are one line of text, "KG1 <verb> <fields...>", answered with one
+// datagram:
 //
 //	host:   open <protocol> <probe> <lan> <relayOnly>  -> room <code> <secret>
-//	        poll <code> <secret>     -> hosted <code>, then one line per join:
+//	        poll <code> <secret> [<players> <playing> <dropIn> <public> <level> <name...>]
+//	                                 -> hosted <code>, then one line per join:
 //	                                    join <id> <public> <lan>      punch these
 //	                                    relay <id> <port> <token>     punch the relay
 //	        close <code> <secret>    -> closed
@@ -26,7 +29,16 @@ import (
 //	        status <id> <secret>     -> wait | direct <public> <lan> | relay <port> <token>
 //	        relay <id> <secret>      -> the same as status, after asking for the relay
 //	        done <id> <secret>       -> done
-//	any:    -> error <reason>
+//	any:    list <protocol> <page>   -> rooms <page> <pages>, then one line per room:
+//	                                    room <code> <players> <playing> <dropIn> <relay> <level> <name...>
+//	        -> error <reason>
+//
+// Relay only is the host's choice (open); a join's relayOnly field is ignored.
+// The room info a host sends with its polls (players, whether a level is
+// being played, drop-in, public, the level and the room's name) is what the
+// list shows; private rooms are left out of it and joined by code. A list
+// request must be at least listRequestLen bytes (padded with spaces), so its
+// reply is never much larger than it.
 //
 // A probe is an ENet connect packet from a machine's game socket whose
 // connect data is its probe token: it tells the server that socket's public
@@ -34,16 +46,21 @@ import (
 // on this server's own address, which the game already knows.
 
 const (
-	magic         = "KG1 "
-	roomIdle      = 15 * time.Second // a room whose host stopped polling is closed
-	joinLife      = 60 * time.Second // a join not finished by then is forgotten
-	probeLife     = 60 * time.Second
-	maxJoins      = 8 // pending joins per room
-	maxRooms      = 10000
-	maxProbes     = 100000
-	limitBurst    = 20        // opens and joins per address ...
-	limitPerSec   = 20.0 / 60 // ... refilled per second
-	maxControlLen = 512
+	magic          = "KG1 "
+	roomIdle       = 15 * time.Second // a room whose host stopped polling is closed
+	joinLife       = 60 * time.Second // a join not finished by then is forgotten
+	probeLife      = 60 * time.Second
+	maxJoins       = 8 // pending joins per room
+	maxRooms       = 10000
+	maxProbes      = 100000
+	limitBurst     = 20        // opens and joins per address ...
+	limitPerSec    = 20.0 / 60 // ... refilled per second
+	maxControlLen  = 512
+	maxPlayers     = 5
+	maxNameLen     = 24 // a room's name
+	maxLevelLen    = 32
+	listPage       = 6   // rooms per list reply
+	listRequestLen = 256 // bytes; list replies stay under about 2.5 times this
 )
 
 type Room struct {
@@ -53,8 +70,16 @@ type Room struct {
 	lan          string
 	relayOnly    bool
 	lastPoll     time.Time
+	info         *RoomInfo // from the host's polls; nil until the first
 	joins        []*Join
 	pairs        []*relay.Pair // relay pairs of finished or forgotten joins
+}
+
+// RoomInfo is what a host says about its room, for the list.
+type RoomInfo struct {
+	players               int
+	playing, dropIn, open bool // open: public, listed
+	level, name           string
 }
 
 type Join struct {
@@ -62,7 +87,6 @@ type Join struct {
 	room       *Room
 	probe      uint32
 	lan        string
-	relayOnly  bool
 	created    time.Time
 	pair       *relay.Pair
 }
@@ -131,7 +155,7 @@ func (s *Server) Packet(packet []byte, from netip.AddrPort) []byte {
 	if len(packet) > maxControlLen || !strings.HasPrefix(string(packet), magic) {
 		return nil
 	}
-	return []byte(magic + s.control(strings.Fields(string(packet[len(magic):])), from))
+	return []byte(magic + s.control(strings.Fields(string(packet[len(magic):])), from, len(packet)))
 }
 
 func errorReply(reason string) string { return "error " + reason }
@@ -153,6 +177,53 @@ func intField(text string, max int) (int, bool) {
 	return n, err == nil && n >= 0 && n <= max
 }
 
+// nameField checks a room's name: the fields joined by single spaces,
+// printable ASCII, at most maxNameLen bytes.
+func nameField(fields []string) (string, bool) {
+	name := strings.Join(fields, " ")
+	if name == "" || len(name) > maxNameLen {
+		return "", false
+	}
+	for _, c := range []byte(name) {
+		if c < 0x21 && c != ' ' || c > 0x7e {
+			return "", false
+		}
+	}
+	return name, true
+}
+
+func levelField(text string) bool {
+	if text == "" || len(text) > maxLevelLen {
+		return false
+	}
+	for _, c := range text {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func flag(text string) (bool, bool) {
+	return text == "1", text == "0" || text == "1"
+}
+
+// roomInfo reads the fields after a poll's code and secret.
+func roomInfo(f []string) (*RoomInfo, bool) {
+	if len(f) < 6 {
+		return nil, false
+	}
+	players, ok1 := intField(f[0], maxPlayers)
+	playing, ok2 := flag(f[1])
+	dropIn, ok3 := flag(f[2])
+	open, ok4 := flag(f[3])
+	name, ok5 := nameField(f[5:])
+	if !ok1 || players < 1 || !ok2 || !ok3 || !ok4 || !ok5 || !levelField(f[4]) {
+		return nil, false
+	}
+	return &RoomInfo{players: players, playing: playing, dropIn: dropIn, open: open, level: f[4], name: name}, true
+}
+
 func (s *Server) allowed(addr netip.Addr) bool {
 	b := s.limits[addr]
 	if b == nil {
@@ -162,20 +233,37 @@ func (s *Server) allowed(addr netip.Addr) bool {
 	return b.Take(1, s.now(), limitPerSec, limitBurst)
 }
 
-func (s *Server) control(f []string, from netip.AddrPort) string {
+func (s *Server) control(f []string, from netip.AddrPort, size int) string {
 	if len(f) == 0 {
 		return errorReply("empty message")
 	}
 	switch {
 	case f[0] == "open" && len(f) == 5:
 		return s.open(f[1:], from)
-	case f[0] == "poll" && len(f) == 3:
+	case f[0] == "poll" && len(f) >= 3:
 		room := s.rooms[f[1]]
 		if room == nil || room.secret != f[2] {
 			return errorReply("no such room")
 		}
+		if len(f) > 3 {
+			info, ok := roomInfo(f[3:])
+			if !ok {
+				return errorReply("bad room info")
+			}
+			room.info = info
+		}
 		room.lastPoll = s.now()
 		return s.hosted(room)
+	case f[0] == "list" && len(f) == 3:
+		if size < listRequestLen {
+			return errorReply("bad message")
+		}
+		protocol, ok1 := intField(f[1], 65535)
+		page, ok2 := intField(f[2], 1000)
+		if !ok1 || !ok2 {
+			return errorReply("bad message")
+		}
+		return s.list(protocol, page)
 	case f[0] == "close" && len(f) == 3:
 		room := s.rooms[f[1]]
 		if room != nil && room.secret == f[2] {
@@ -260,16 +348,24 @@ func (s *Server) join(f []string, from netip.AddrPort) string {
 	if protocol != room.protocol {
 		return errorReply(fmt.Sprintf("version mismatch: the host runs protocol %d, you run %d", room.protocol, protocol))
 	}
+	if info := room.info; info != nil {
+		if info.players >= maxPlayers {
+			return errorReply("the room is full")
+		}
+		if info.playing && !info.dropIn {
+			return errorReply("the game has already started")
+		}
+	}
 	if len(room.joins) >= maxJoins {
 		return errorReply("the room is busy, try again")
 	}
 	join := &Join{
 		id: randomHex(8), secret: randomHex(8), room: room, probe: uint32(probe),
-		lan: lan, relayOnly: f[4] == "1", created: s.now(),
+		lan: lan, created: s.now(),
 	}
 	room.joins = append(room.joins, join)
 	s.joins[join.id] = join
-	if join.relayOnly || room.relayOnly {
+	if room.relayOnly {
 		if reply := s.openRelay(join); reply != "" {
 			s.forgetJoin(join)
 			return reply
@@ -293,10 +389,10 @@ func (s *Server) probeAddr(token uint32) (netip.AddrPort, bool) {
 	return seen.addr, ok
 }
 
-// direct reports whether the two may connect directly (neither asked for
-// the relay only) and both probes have arrived.
+// direct reports whether the two may connect directly (the host did not ask
+// for the relay only) and both probes have arrived.
 func (s *Server) direct(join *Join) (host, client netip.AddrPort, ok bool) {
-	if join.relayOnly || join.room.relayOnly {
+	if join.room.relayOnly {
 		return host, client, false
 	}
 	host, ok1 := s.probeAddr(join.room.probe)
@@ -315,6 +411,40 @@ func (s *Server) hosted(room *Room) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// list gives one page of the public rooms of a protocol: rooms waiting for
+// players first, then by code.
+func (s *Server) list(protocol, page int) string {
+	var rooms []*Room
+	for _, room := range s.rooms {
+		if room.info != nil && room.info.open && room.protocol == protocol {
+			rooms = append(rooms, room)
+		}
+	}
+	sort.Slice(rooms, func(i, j int) bool {
+		a, b := rooms[i], rooms[j]
+		if a.info.playing != b.info.playing {
+			return !a.info.playing
+		}
+		return a.code < b.code
+	})
+	pages := max(1, (len(rooms)+listPage-1)/listPage)
+	page = min(max(page, 1), pages)
+	lines := []string{fmt.Sprintf("rooms %d %d", page, pages)}
+	for _, room := range rooms[min((page-1)*listPage, len(rooms)):min(page*listPage, len(rooms))] {
+		info := room.info
+		lines = append(lines, fmt.Sprintf("room %s %d %s %s %s %s %s", room.code, info.players,
+			bit(info.playing), bit(info.dropIn), bit(room.relayOnly), info.level, info.name))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func bit(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
 }
 
 func (s *Server) status(join *Join) string {

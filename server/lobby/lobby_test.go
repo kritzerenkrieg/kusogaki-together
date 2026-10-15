@@ -202,3 +202,82 @@ func TestRelayOnRequestAndIdle(t *testing.T) {
 		t.Fatal("a silent pair is closed")
 	}
 }
+
+func (f *fixture) list(page int) []string {
+	request := fmt.Sprintf("list 7 %d", page)
+	request += strings.Repeat(" ", listRequestLen-len(magic)-len(request))
+	reply := f.server.Packet([]byte(magic+request), addr("3.3.3.3:7000"))
+	return strings.Split(string(reply[len(magic):]), "\n")
+}
+
+func TestRoomList(t *testing.T) {
+	f := newFixture(t)
+	if r := f.send("3.3.3.3:7000", "list 7 1"); r[0] != "error" {
+		t.Fatalf("a short list request is refused (no amplification): %v", r)
+	}
+	if l := f.list(1); len(l) != 1 || l[0] != "rooms 1 1" {
+		t.Fatalf("no rooms: %q", l)
+	}
+	a := f.send("1.1.1.1:5000", "open 7 111 - 1")
+	b := f.send("1.1.1.2:5000", "open 7 112 - 0")
+	c := f.send("1.1.1.3:5000", "open 7 113 - 0")
+	d := f.send("1.1.1.4:5000", "open 8 114 - 0")
+	f.send("1.1.1.1:5000", "poll "+a[1]+" "+a[2]+" 2 1 1 1 example Friday  night   fun")
+	f.send("1.1.1.2:5000", "poll "+b[1]+" "+b[2]+" 1 0 1 1 topdown Bob's room")
+	f.send("1.1.1.3:5000", "poll "+c[1]+" "+c[2]+" 1 0 1 0 example Private")
+	f.send("1.1.1.4:5000", "poll "+d[1]+" "+d[2]+" 1 0 1 1 example Newer game")
+	l := f.list(1)
+	want := []string{
+		"rooms 1 1",
+		"room " + b[1] + " 1 0 1 0 topdown Bob's room",
+		"room " + a[1] + " 2 1 1 1 example Friday night fun",
+	}
+	if strings.Join(l, "|") != strings.Join(want, "|") {
+		t.Fatalf("public rooms of this protocol, waiting first:\n got %q\nwant %q", l, want)
+	}
+	if r := f.send("1.1.1.2:5000", "poll "+b[1]+" "+b[2]+" 1 0 1 1 bad-level x"); r[0] != "error" {
+		t.Fatalf("bad room info is refused: %v", r)
+	}
+	if r := f.send("1.1.1.2:5000", "poll "+b[1]+" "+b[2]+" 1 0 1 1 example "+strings.Repeat("x", maxNameLen+1)); r[0] != "error" {
+		t.Fatalf("a long name is refused: %v", r)
+	}
+	for i := 0; i < listPage; i++ {
+		r := f.send(fmt.Sprintf("4.4.4.%d:5000", i), fmt.Sprintf("open 7 %d - 0", 200+i))
+		f.send(fmt.Sprintf("4.4.4.%d:5000", i), "poll "+r[1]+" "+r[2]+" 1 0 1 1 example Room")
+	}
+	if l := f.list(2); l[0] != "rooms 2 2" || len(l) != 3 {
+		t.Fatalf("the second page: %q", l)
+	}
+	if l := f.list(9); l[0] != "rooms 2 2" {
+		t.Fatalf("a page past the end gives the last: %q", l[0])
+	}
+}
+
+func TestJoinRefusedByRoomInfo(t *testing.T) {
+	f := newFixture(t)
+	r := f.send("1.1.1.1:5000", "open 7 111 - 0")
+	code, secret := r[1], r[2]
+	f.send("1.1.1.1:5000", "poll "+code+" "+secret+" 2 1 0 0 example Locked")
+	if j := f.send("2.2.2.2:6000", "join "+code+" 7 222 - 0"); strings.Join(j, " ") != "error the game has already started" {
+		t.Fatalf("a playing room without drop-in: %v", j)
+	}
+	f.send("1.1.1.1:5000", "poll "+code+" "+secret+" 5 0 1 0 example Full")
+	if j := f.send("2.2.2.2:6000", "join "+code+" 7 222 - 0"); strings.Join(j, " ") != "error the room is full" {
+		t.Fatalf("a full room: %v", j)
+	}
+	f.send("1.1.1.1:5000", "poll "+code+" "+secret+" 2 1 1 0 example Drop in")
+	if j := f.send("2.2.2.2:6000", "join "+code+" 7 222 - 0"); j[0] != "joining" {
+		t.Fatalf("a private room with drop-in is joined by code: %v", j)
+	}
+}
+
+func TestOnlyTheHostChoosesTheRelay(t *testing.T) {
+	f := newFixture(t)
+	r := f.send("1.1.1.1:5000", "open 7 111 - 0")
+	j := f.send("2.2.2.2:6000", "join "+r[1]+" 7 222 - 1")
+	f.probe("1.1.1.1:26967", 111)
+	f.probe("2.2.2.2:40001", 222)
+	if s := f.send("2.2.2.2:6000", "status "+j[1]+" "+j[2]); s[0] != "direct" {
+		t.Fatalf("a client's relayOnly is ignored: %v", s)
+	}
+}

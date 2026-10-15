@@ -15,7 +15,18 @@
 --
 -- Network play (Phase 2, NETWORKING.md): `--host` opens a session on this
 -- machine; `--join <ip>` joins one. Without either, this machine plays alone
--- and is its own host. The host is the source of truth: it picks each
+-- and is its own host.
+--
+-- Rooms (Multiplayer in the menu, scenes/lobby.lua and scenes/room.lua): a
+-- session starts in the waiting room. The host picks the level and starts a
+-- countdown; at its end every player in the room plays that level. When the
+-- level is over the host takes everyone back to the room. With drop-in on, a
+-- player who joins while a level is played joins it at the host's last
+-- checkpoint; otherwise the room is closed to joins until it is back in the
+-- waiting room. The host sends the room's state to every player on each
+-- change (protocol `room`) and to the server's room list with its polls.
+-- `--host` from the command line skips the waiting room: it plays at once,
+-- with drop-in. The host is the source of truth: it picks each
 -- (re)start's seed and generation and announces them as a `restart` session
 -- message (gameplay.takeOutbox); every machine, the host included, restarts
 -- through gameplay.restart(seed). Player ids stay stable for the session, so
@@ -49,11 +60,13 @@ local statesync = require("core.net.statesync")
 local fullstate = require("core.level.fullstate")
 local script = require("core.script")
 local watchdog = require("core.watchdog")
+local rendezvous = require("core.net.rendezvous")
+local protocol = require("core.net.protocol")
 
 local gameplay = {}
 
--- Command line (testing shortcuts; players use Host online / Join online in
--- the menu): `--level <name>` picks the level (default "example"; a client
+-- Command line (testing shortcuts; players use Multiplayer in the menu):
+-- `--level <name>` picks the level (default "example"; a client
 -- plays the host's); `--host` / `--join <ip[:port]>` start network play
 -- directly over a LAN or 127.0.0.1, without the server;
 -- `--net-lag <ms> --net-loss <percent>` make this machine's connection worse
@@ -61,7 +74,7 @@ local gameplay = {}
 -- couch co-op. Internet play through a server (your own for testing):
 -- `--host --online` opens a room on our server and shows its code;
 -- `--code <6 digits>` joins one; `--server <host[:port]>` names the server;
--- `--relay-only` hides this machine's address behind the relay.
+-- `--relay-only` (host) relays every client of the room.
 local LEVEL_NAME = "example"
 local LOCAL_COOP = false
 local NET_MODE, JOIN_ADDRESS = nil, nil -- "host" | "client" | nil
@@ -126,6 +139,37 @@ local NET_PORT, NET_BIND = nil, nil -- tests host on another port and address
 
 local MAX_SEED = 2147483646 -- seeds are 1..MAX_SEED (the MINSTD generator's range)
 
+-- The room (network play). On the host: its settings, the players in it and
+-- their names; on a client: the host's last `room` message.
+local ROOM_COUNTDOWN = 3    -- seconds from Start to the level
+local PLAYER_NAME = "Player"
+local room = nil            -- client: the host's room message; host: built by roomMessage()
+local roomSettings = { name = "Room", dropIn = true, public = true }
+local members = {}          -- host: player id -> { name, has } for everyone in the room (itself too)
+local roomState = "waiting" -- host: "waiting" | "countdown" | "playing"
+local roomCountdown = nil   -- host: seconds left, while counting down
+local roomDirty = true      -- host: the room changed since it was last sent
+local sentHas = nil         -- client: the "has" fingerprint last sent (for the room's level)
+local fingerprints = {}     -- level name -> its fingerprint ("" when missing), per session
+
+-- The fingerprint of this machine's copy of level `name`, or "" without one.
+local function fingerprintOf(name)
+    if fingerprints[name] == nil then
+        local root = "levels/" .. name
+        fingerprints[name] = love.filesystem.getInfo(root .. "/level.json", "file")
+            and levelpack.fingerprint(root) or ""
+    end
+    return fingerprints[name]
+end
+
+-- Switch to `name` unless it is already the scene (the room and the level
+-- follow what the host does).
+local function showScene(name)
+    if sceneEngine.current ~= name then
+        sceneEngine.switch(name)
+    end
+end
+
 -- Every player id in the session, sorted: local slots and remote players.
 local function sessionIds()
     local ids = {}
@@ -152,6 +196,9 @@ end
 local function freeId()
     local used = {}
     for _, id in ipairs(sessionIds()) do
+        used[id] = true
+    end
+    for id in pairs(members) do
         used[id] = true
     end
     for id = 1, Level.MAX_PLAYERS do
@@ -254,7 +301,8 @@ function gameplay.restart(seed)
 end
 
 -- Host only: pick a fresh seed, announce it with the next generation, and
--- restart with it.
+-- restart with it. Only players in the level hear it (not those still in the
+-- room, waiting to drop in).
 local function hostRestart()
     local seed = love.math.random(1, MAX_SEED)
     generation = generation + 1
@@ -388,27 +436,208 @@ local function presentOnce(t, events)
     level:protect(present.all, fresh, level, localIds())
 end
 
+-- ── The room (host) ───────────────────────────────────────────────────────
+
+-- The levels this machine has (folders in levels/ with a level.json), sorted.
+function gameplay.levels()
+    local list = {}
+    for _, name in ipairs(love.filesystem.getDirectoryItems("levels")) do
+        if name:match("^[%w_]+$") and love.filesystem.getInfo("levels/" .. name .. "/level.json", "file") then
+            list[#list + 1] = name
+        end
+    end
+    table.sort(list)
+    return list
+end
+
+-- The room as every player sees it (protocol `room`).
+local function roomMessage()
+    local players = {}
+    local ids = {}
+    for id in pairs(members) do
+        ids[#ids + 1] = id
+    end
+    table.sort(ids)
+    local fp = fingerprintOf(LEVEL_NAME)
+    for _, id in ipairs(ids) do
+        players[#players + 1] = { id = id, name = members[id].name, has = members[id].has == fp }
+    end
+    local code = net and net.room and net:room() or nil
+    return {
+        t = "room", name = roomSettings.name, code = code or "", level = LEVEL_NAME, fp = fp,
+        st = roomState, cd = roomCountdown and math.ceil(roomCountdown) or 0,
+        di = roomSettings.dropIn, pub = roomSettings.public, relay = ONLINE and ONLINE.relayOnly == true or false,
+        players = players,
+    }
+end
+
+-- Put player `id` (a client in the room) into the level being played, at
+-- `x, y`; its machine learns everything else from the host's states.
+local function addToLevel(id, x, y)
+    remoteIds[id] = true
+    spawn(x, y, id)
+    inputsync.addPlayer(inputs, id)
+    statesync.addClient(states, id) -- a full state at the next send
+end
+
+-- The countdown is over: everyone in the room plays the room's level.
+local function hostStart()
+    roomState, roomCountdown, roomDirty = "playing", nil, true
+    local fp = fingerprintOf(LEVEL_NAME)
+    for id, member in pairs(members) do
+        if id ~= slots[1].id and member.has == fp then
+            remoteIds[id] = true
+            inputsync.addPlayer(inputs, id)
+            statesync.addClient(states, id)
+        end
+    end
+    local seed = love.math.random(1, MAX_SEED)
+    generation = generation + 1
+    for id in pairs(remoteIds) do
+        net:sendTo(id, { t = "start", level = LEVEL_NAME, fp = fp, seed = seed, generation = generation,
+            players = sessionIds() })
+    end
+    gameplay.restart(seed)
+    showScene("gameplay")
+end
+
+-- Host: everyone back to the waiting room (the level is over).
+function gameplay.backToRoom()
+    if NET_MODE ~= "host" or not net or roomState ~= "playing" then
+        return false
+    end
+    generation = generation + 1
+    for id in pairs(remoteIds) do
+        net:sendTo(id, { t = "toroom", generation = generation })
+        inputsync.removePlayer(inputs, id)
+        statesync.removeClient(states, id)
+    end
+    remoteIds, votes, countdown = {}, {}, nil
+    level = nil
+    roomState, roomDirty = "waiting", true
+    showScene("room")
+    return true
+end
+
+-- Host: does everyone in the room have the room's level?
+local function everyoneHasLevel()
+    local fp = fingerprintOf(LEVEL_NAME)
+    for _, member in pairs(members) do
+        if member.has ~= fp then
+            return false
+        end
+    end
+    return fp ~= ""
+end
+
+-- Host actions from the waiting room: "level" (step through the levels by
+-- `step`), "dropIn", "public", "start", "cancel". Returns false and a
+-- reason when it cannot be done.
+function gameplay.roomAction(action, step)
+    if NET_MODE ~= "host" or not net or roomState == "playing" then
+        return false, "only the host can do that"
+    end
+    if action == "level" then
+        local list = gameplay.levels()
+        local index = 1
+        for i, name in ipairs(list) do
+            if name == LEVEL_NAME then index = i end
+        end
+        LEVEL_NAME = list[(index - 1 + (step or 1)) % #list + 1] or LEVEL_NAME
+        roomState, roomCountdown = "waiting", nil
+    elseif action == "dropIn" then
+        roomSettings.dropIn = not roomSettings.dropIn
+    elseif action == "public" then
+        roomSettings.public = not roomSettings.public
+    elseif action == "start" then
+        if not everyoneHasLevel() then
+            return false, "everyone needs the level first"
+        end
+        roomState, roomCountdown = "countdown", ROOM_COUNTDOWN
+    elseif action == "cancel" then
+        roomState, roomCountdown = "waiting", nil
+    end
+    roomDirty = true
+    return true
+end
+
+-- Host, every frame: the countdown, and the room sent to everyone and to the
+-- server's list when it changed.
+local function updateRoom(delta)
+    if roomState == "countdown" then
+        local before = math.ceil(roomCountdown)
+        roomCountdown = roomCountdown - delta
+        if not everyoneHasLevel() then
+            roomState, roomCountdown, roomDirty = "waiting", nil, true
+        elseif roomCountdown <= 0 then
+            hostStart()
+        elseif math.ceil(roomCountdown) ~= before then
+            roomDirty = true
+        end
+    end
+    if room and net.room and room.code ~= (net:room() or "") then
+        roomDirty = true -- the server gave the room its code
+    end
+    if roomDirty then
+        roomDirty = false
+        room = roomMessage()
+        net:broadcast(room)
+        local count = 0
+        for _ in pairs(members) do count = count + 1 end
+        net:setRoomInfo({ players = count, playing = roomState == "playing", dropIn = roomSettings.dropIn,
+            public = roomSettings.public, level = LEVEL_NAME, name = roomSettings.name })
+    end
+end
+
 -- The host's side of the session (core/net/session.lua handler).
 local hostHandler = {
     accept = function()
         local id = freeId()
-        if not id or not level then
-            return nil, "session is full"
+        if not id then
+            return nil, "the room is full"
+        end
+        if roomState == "playing" and not roomSettings.dropIn then
+            return nil, "the game has already started"
         end
         return id
     end,
-    -- A client finished the handshake: its player joins at the host's latest
-    -- checkpoint (the host player's respawn point); its machine learns where
-    -- from the host's state.
-    welcome = function(id)
-        remoteIds[id] = true
+    -- A client is in the room. It says which levels it has (has); while a
+    -- level is played it joins it from there (drop-in).
+    welcome = function(id, name)
+        name = rendezvous.cleanName(name, protocol.MAX_NAME)
+        members[id] = { name = name ~= "" and name or ("Player " .. id), has = nil }
+        roomDirty = true
+    end,
+    -- Its copy of the room's level. While a level is played: in it joins at
+    -- the host's latest checkpoint (the host player's respawn point), or is
+    -- let go when it does not have it.
+    has = function(id, fp)
+        local member = members[id]
+        if not member then
+            return
+        end
+        member.has, roomDirty = fp, true
+        if roomState ~= "playing" or remoteIds[id] or not level then
+            return
+        end
+        if fp ~= fingerprintOf(LEVEL_NAME) then
+            net:kick(id, "you do not have the host's level " .. LEVEL_NAME)
+            return
+        end
         local hostPlayer = slots[1].player
-        spawn(hostPlayer.spawnX, hostPlayer.spawnY, id)
-        inputsync.addPlayer(inputs, id)
-        statesync.addClient(states, id) -- a full state at the next send
-        return { seed = level.seed, generation = generation, players = sessionIds() }
+        addToLevel(id, hostPlayer.spawnX, hostPlayer.spawnY)
+        net:sendTo(id, { t = "start", level = LEVEL_NAME, fp = fp, seed = level.seed, generation = generation,
+            players = sessionIds() })
+        for other in pairs(remoteIds) do
+            if other ~= id then
+                net:sendTo(other, { t = "joined", id = id })
+            end
+        end
     end,
     left = function(id)
+        if members[id] then
+            members[id], roomDirty = nil, true
+        end
         remoteIds[id] = nil
         inputsync.removePlayer(inputs, id)
         forwarded[id] = nil
@@ -516,32 +745,48 @@ local function reconcile(state, h, flat)
 end
 
 -- The client's side of the session.
-local pendingLevel -- the level name the host announced, until its welcome
 local clientHandler = {
-    -- The host plays `name`: this machine must have the same files.
-    level = function(name, fingerprint)
-        local root = "levels/" .. name
-        if not love.filesystem.getInfo(root .. "/level.json", "file") then
-            return false, "you do not have the host's level " .. name
-        end
-        if levelpack.fingerprint(root) ~= fingerprint then
-            return false, "your copy of level " .. name .. " differs from the host's"
-        end
-        pendingLevel = name
-        return true
-    end,
+    -- In the room, with player id `you`.
     welcome = function(message)
-        LEVEL_NAME = pendingLevel
         slots[1].id = message.you
+        netStatus = nil
+    end,
+    -- The room changed: tell the host whether this machine has its level.
+    room = function(message)
+        room = message
+        local fp = fingerprintOf(message.level)
+        if sentHas ~= message.level .. fp then
+            sentHas = message.level .. fp
+            net:has(fp)
+        end
+    end,
+    -- Play a level (everyone at the end of the countdown, or this machine
+    -- dropping in): the same files as the host's, or leave.
+    start = function(message)
+        if fingerprintOf(message.level) ~= message.fp then
+            netStatus = "Disconnected: your copy of level " .. message.level .. " differs from the host's"
+            net:close()
+            return
+        end
+        LEVEL_NAME = message.level
         remoteIds = {}
         for _, id in ipairs(message.players) do
-            if id ~= message.you then
+            if id ~= slots[1].id then
                 remoteIds[id] = true
             end
         end
         generation = message.generation
         gameplay.restart(message.seed)
-        netStatus = nil
+        showScene("gameplay")
+    end,
+    toroom = function(message)
+        if message.generation <= generation then
+            return -- stale
+        end
+        generation = message.generation
+        remoteIds, votes, countdown = {}, {}, nil
+        level = nil
+        showScene("room")
     end,
     -- The host's state after its tick h: restore it and replay since.
     snap = function(message)
@@ -640,7 +885,6 @@ local function startNetwork()
         net, err = session.host({
             port = NET_PORT,
             bind = NET_BIND,
-            level = { name = LEVEL_NAME, fingerprint = levelpack.fingerprint(level.root) },
             handler = hostHandler,
             rendezvous = ONLINE,
         })
@@ -649,7 +893,7 @@ local function startNetwork()
         end
     elseif NET_MODE == "client" then
         local err
-        net, err = session.join(JOIN_ADDRESS, clientHandler, { rendezvous = ONLINE })
+        net, err = session.join(JOIN_ADDRESS, clientHandler, { rendezvous = ONLINE, name = PLAYER_NAME })
         local target = ONLINE and ("room " .. tostring(ONLINE.code)) or JOIN_ADDRESS
         netStatus = net and ("Connecting to " .. target .. "...") or ("Could not join: " .. tostring(err))
     end
@@ -661,11 +905,14 @@ function gameplay.closeNetwork()
         net:close()
         net = nil
     end
+    room = nil
 end
 
 local function flushOutbox()
     for _, message in ipairs(gameplay.takeOutbox()) do
-        net:broadcast(message)
+        for id in pairs(remoteIds) do
+            net:sendTo(id, message)
+        end
     end
 end
 
@@ -792,43 +1039,52 @@ end
 
 -- ── Scene ─────────────────────────────────────────────────────────────────
 
+-- Start this machine's play as configured: alone, hosting (in the waiting
+-- room, or playing at once with `--host`), or joining.
 function gameplay.load()
     playerModule.load()
     slots = { { source = input.keyboard(1), id = 1 } }
     remoteIds = {}
     outbox = {}
     generation = 0
+    room, sentHas, fingerprints = nil, nil, {}
+    members = { [1] = { name = PLAYER_NAME } }
+    members[1].has = fingerprintOf(LEVEL_NAME)
+    roomCountdown, roomDirty = nil, true
     states = NET_MODE == "host" and statesync.host() or nil
     inputs = NET_MODE == "host" and inputsync.host() or nil
-    if NET_MODE == "client" then
+    if NET_MODE == "client" or (NET_MODE == "host" and roomSettings.waiting) then
         level = nil
+        roomState = "waiting"
     else
+        roomState = "playing"
         hostRestart()
     end
     startNetwork()
 end
 
--- Host of an internet room: its code (or what went wrong) on the status line.
+-- Host of an internet room: what went wrong with it on the status line (the
+-- waiting room shows its code).
 local function showRoom()
-    local code, state, reason = net:room()
-    if state == "open" then
-        if ONLINE.copied ~= code then
-            ONLINE.copied = code -- once per room: ready to paste to friends
-            pcall(love.system.setClipboardText, code)
-        end
-        netStatus = "Room code " .. code .. " (copied)" .. (ONLINE.relayOnly and " - relay only" or "")
-    elseif state == "opening" then
+    local _, state, reason = net:room()
+    if state == "opening" then
         netStatus = "Opening a room..."
     elseif state == "failed" then
         netStatus = "Room: " .. tostring(reason)
+    else
+        netStatus = nil
     end
 end
 
 function gameplay.update(delta)
     if net then
         net:service()
-        if NET_MODE == "host" and ONLINE and net.room then
-            showRoom()
+        if NET_MODE == "host" and net.enet then
+            members[1].has = fingerprintOf(LEVEL_NAME)
+            updateRoom(delta)
+            if ONLINE and net.room then
+                showRoom()
+            end
         end
     end
     if not playing() then
@@ -867,6 +1123,8 @@ function gameplay.keypressed(key)
         fx.toScene("menu", 0.5, { ease = "smoothstep" })
     elseif not playing() then
         return
+    elseif (key == "return" or key == "kpenter") and (level.finished or level.faulted) then
+        gameplay.backToRoom()
     elseif input.layoutForKey(key, "restart") then
         gameplay.toggleVote(slotIndexFor(input.keyboard(input.layoutForKey(key, "restart"))))
     elseif LOCAL_COOP then
@@ -928,16 +1186,28 @@ end
 
 local OUTCOME_TITLES = { win = "LEVEL CLEAR", lose = "GAME OVER" }
 
+-- The keys under a finished level's banner: in a room the host takes
+-- everyone back to it.
+local function stoppedKeys()
+    if NET_MODE == "host" and net then
+        return "ENTER back to the room   R vote restart   ESC leave"
+    elseif NET_MODE == "client" then
+        return "The host can go back to the room   R vote restart   ESC leave"
+    end
+    return nil
+end
+
 -- Shown once a script stopped the level (Level:fault), or a gamemode ended it
 -- (Level:finish).
 local function drawStopped()
     if level.faulted then
         local reason = level.faulted:match("^[^\n]*"):sub(1, 140)
-        drawBanner("THIS LEVEL STOPPED", reason, { 1, 0.85, 0.4 })
+        drawBanner("THIS LEVEL STOPPED", reason, { 1, 0.85, 0.4 }, stoppedKeys())
     else
         local finished = level.finished
         local title = OUTCOME_TITLES[finished.outcome] or finished.outcome:upper()
-        drawBanner(title, finished.message, finished.outcome == "lose" and { 1, 0.45, 0.4 } or { 0.55, 1, 0.6 })
+        drawBanner(title, finished.message, finished.outcome == "lose" and { 1, 0.45, 0.4 } or { 0.55, 1, 0.6 },
+            stoppedKeys())
     end
 end
 
@@ -1000,11 +1270,29 @@ end
 -- Tests: play as "host" or "client" (address) without a command line, on
 -- another port and bind address. Takes effect at the next gameplay.load.
 -- options.online = { server, code, relayOnly } for internet play.
+-- options.room = { name, dropIn, public } opens the host's waiting room
+-- (without it a host plays at once); options.name is this player's name.
 function gameplay.configure(options)
     NET_MODE, JOIN_ADDRESS = options.mode, options.address
     ONLINE = options.online
     NET_PORT, NET_BIND = options.port, options.bind
     LEVEL_NAME = options.level or LEVEL_NAME
+    PLAYER_NAME = options.name or PLAYER_NAME
+    local settings = options.room
+    roomSettings = {
+        name = settings and settings.name or "Room",
+        dropIn = not settings or settings.dropIn ~= false,
+        public = not settings or settings.public ~= false,
+        waiting = settings ~= nil,
+    }
+end
+
+-- The waiting room for scenes/room.lua: the room's state (protocol `room`
+-- fields, nil until a client heard from the host), whether this machine
+-- hosts, its own player id, and what to tell the player (connecting,
+-- disconnected).
+function gameplay.getRoom()
+    return room, NET_MODE == "host", slots[1] and slots[1].id, netStatus
 end
 
 function gameplay.getNetwork()
@@ -1029,8 +1317,7 @@ sceneEngine.register("gameplay", {
         end
     end,
     exit = function()
-        gameplay.closeNetwork()
-        watchdog.leave()
+        watchdog.leave() -- the session lives on into the room; the menu closes it
     end,
     update = gameplay.update,
     keypressed = gameplay.keypressed,
