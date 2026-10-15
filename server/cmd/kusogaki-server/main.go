@@ -1,7 +1,6 @@
-// Command kusogaki-server is the rendezvous and relay for Kusogaki
-// Together's internet play (NETWORKING.md, Connectivity). It introduces the
-// machines in a room so they can connect peer to peer, and relays their
-// packets when that fails. It never runs the game.
+// Command kusogaki-server is Kusogaki Together's public server: the lobby
+// (rooms, codes, introductions for hole punching) and the relay. It never
+// runs the game. See server/README.md and server/DEPLOYMENT.md.
 //
 //	kusogaki-server -addr :26968 -relay-ports 27000-27999
 package main
@@ -15,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"kusogaki-together/server/lobby"
+	"kusogaki-together/server/relay"
 )
 
 func parseRange(text string) (int, int, error) {
@@ -43,10 +45,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := NewServer(NewRelay(lo, hi))
-	server.log = log.New(os.Stderr, "", log.LstdFlags).Printf
+	server := lobby.New(relay.New(lo, hi))
+	server.Log = log.New(os.Stderr, "", log.LstdFlags).Printf
 	log.Printf("kusogaki-server on %s, relay ports %d-%d", conn.LocalAddr(), lo, hi)
-	buf := make([]byte, maxPacket)
+	buf := make([]byte, relay.MaxPacket)
 	lastSweep := time.Now()
 	for {
 		conn.SetReadDeadline(time.Now().Add(time.Second))

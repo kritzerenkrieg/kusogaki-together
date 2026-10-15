@@ -12,6 +12,7 @@ local watchdog = require("core.watchdog")
 local text = require("core.text")
 
 require("scenes.title_screen")
+require("scenes.lobby")
 
 local NOTICE_SECONDS = 10
 local noticeTime = 0 -- seconds left showing why the last run was closed
@@ -43,6 +44,10 @@ end
 
 function love.keypressed(key)
     sceneEngine.keypressed(key)
+end
+
+function love.textinput(t)
+    sceneEngine.textinput(t)
 end
 
 function love.gamepadpressed(joystick, button)

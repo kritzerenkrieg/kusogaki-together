@@ -31,6 +31,8 @@ local quads = { kusogaki = {}, dodon = {} }
 local selectedOption = 1
 local options = {
     { label = "Play" },
+    { label = "Host online", lobby = "host" },
+    { label = "Join online", lobby = "join" },
     { label = "Options" },
     { label = "Exit" },
 }
@@ -308,10 +310,21 @@ function titleScreen.update(delta)
     updateParade(delta)
 end
 
--- Scene for the selected option: play, nothing yet (options), or exit.
+-- Scene for the selected option: play, the online lobby, nothing yet
+-- (options), or exit.
 local function activate()
+    local option = options[selectedOption]
     if selectedOption == 1 then
+        local gameplay = require("scenes.gameplay")
+        if gameplay.getMode() then
+            -- Back from network play: a fresh level on this machine alone.
+            gameplay.configure({})
+            gameplay.load()
+        end
         return "gameplay"
+    elseif option.lobby then
+        require("scenes.lobby").open(option.lobby)
+        return "lobby"
     elseif selectedOption == #options then
         return "exit"
     end

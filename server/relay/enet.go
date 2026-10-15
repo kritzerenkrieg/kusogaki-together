@@ -1,4 +1,4 @@
-package main
+package relay
 
 import "encoding/binary"
 
@@ -18,9 +18,9 @@ const (
 	connectLength  = 48
 )
 
-// connectData returns the data of an ENet connect packet, or ok false when
+// ConnectData returns the data of an ENet connect packet, or ok false when
 // the packet is anything else.
-func connectData(packet []byte) (data uint32, ok bool) {
+func ConnectData(packet []byte) (data uint32, ok bool) {
 	if len(packet) < 2 {
 		return 0, false
 	}

@@ -48,6 +48,14 @@ function sceneEngine.keypressed(key)
     end
 end
 
+-- Typed text (love.textinput), for scenes with text fields.
+function sceneEngine.textinput(t)
+    local scene = sceneEngine.scenes[sceneEngine.current]
+    if scene and scene.textinput then
+        scene.textinput(t)
+    end
+end
+
 function sceneEngine.gamepadpressed(joystick, button)
     local scene = sceneEngine.scenes[sceneEngine.current]
     if scene and scene.gamepadpressed then

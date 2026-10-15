@@ -1,4 +1,4 @@
-package main
+package lobby
 
 import (
 	"crypto/rand"
@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"kusogaki-together/server/relay"
 )
 
-// The rendezvous: rooms with 6-digit codes, the control channel and probes
+// Package lobby is the rendezvous: rooms with 6-digit codes, the control channel and probes
 // (NETWORKING.md, Connectivity). Control messages are one line of text,
 // "KG1 <verb> <fields...>", answered with one datagram:
 //
@@ -52,7 +54,7 @@ type Room struct {
 	relayOnly    bool
 	lastPoll     time.Time
 	joins        []*Join
-	pairs        []*Pair // relay pairs of finished or forgotten joins
+	pairs        []*relay.Pair // relay pairs of finished or forgotten joins
 }
 
 type Join struct {
@@ -62,7 +64,7 @@ type Join struct {
 	lan        string
 	relayOnly  bool
 	created    time.Time
-	pair       *Pair
+	pair       *relay.Pair
 }
 
 type probeSeen struct {
@@ -70,25 +72,27 @@ type probeSeen struct {
 	at   time.Time
 }
 
+// Server holds the rooms. Packet and Sweep are called from one goroutine.
 type Server struct {
-	relay  *Relay
+	relay  *relay.Relay
 	rooms  map[string]*Room
 	joins  map[string]*Join
 	probes map[uint32]probeSeen
-	limits map[netip.Addr]*bucket
+	limits map[netip.Addr]*relay.Bucket
 	now    func() time.Time
-	log    func(format string, args ...any)
+	Log    func(format string, args ...any) // room events (never addresses)
 }
 
-func NewServer(relay *Relay) *Server {
+// New makes a lobby that opens relay pairs from r.
+func New(r *relay.Relay) *Server {
 	return &Server{
-		relay:  relay,
+		relay:  r,
 		rooms:  map[string]*Room{},
 		joins:  map[string]*Join{},
 		probes: map[uint32]probeSeen{},
-		limits: map[netip.Addr]*bucket{},
-		now:    time.Now,
-		log:    func(string, ...any) {},
+		limits: map[netip.Addr]*relay.Bucket{},
+		now:    func() time.Time { return r.Now() },
+		Log:    func(string, ...any) {},
 	}
 }
 
@@ -118,7 +122,7 @@ func (s *Server) newCode() string {
 // Packet handles one datagram from `from` and returns the reply (nil: none).
 func (s *Server) Packet(packet []byte, from netip.AddrPort) []byte {
 	from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
-	if token, ok := connectData(packet); ok {
+	if token, ok := relay.ConnectData(packet); ok {
 		if len(s.probes) < maxProbes || s.probes[token].addr.IsValid() {
 			s.probes[token] = probeSeen{from, s.now()}
 		}
@@ -152,10 +156,10 @@ func intField(text string, max int) (int, bool) {
 func (s *Server) allowed(addr netip.Addr) bool {
 	b := s.limits[addr]
 	if b == nil {
-		b = &bucket{}
+		b = &relay.Bucket{}
 		s.limits[addr] = b
 	}
-	return b.take(1, s.now(), limitPerSec, limitBurst)
+	return b.Take(1, s.now(), limitPerSec, limitBurst)
 }
 
 func (s *Server) control(f []string, from netip.AddrPort) string {
@@ -226,7 +230,7 @@ func (s *Server) open(f []string, from netip.AddrPort) string {
 		lan: lan, relayOnly: f[3] == "1", lastPoll: s.now(),
 	}
 	s.rooms[room.code] = room
-	s.log("room %s opened (%d rooms)", room.code, len(s.rooms))
+	s.Log("room %s opened (%d rooms)", room.code, len(s.rooms))
 	return "room " + room.code + " " + room.secret
 }
 
@@ -237,17 +241,21 @@ func (s *Server) join(f []string, from netip.AddrPort) string {
 	if !ok1 || !ok2 || !ok3 || (f[4] != "0" && f[4] != "1") {
 		return errorReply("bad message")
 	}
+	// The same client asking again (its reply was lost) gets the same join,
+	// without spending its limit.
+	if room := s.rooms[f[0]]; room != nil {
+		for _, join := range room.joins {
+			if join.probe == uint32(probe) {
+				return "joining " + join.id + " " + join.secret
+			}
+		}
+	}
 	if !s.allowed(from.Addr()) {
 		return errorReply("too many requests, wait a minute")
 	}
 	room := s.rooms[f[0]]
 	if room == nil {
 		return errorReply("no such room")
-	}
-	for _, join := range room.joins {
-		if join.probe == uint32(probe) {
-			return "joining " + join.id + " " + join.secret
-		}
 	}
 	if protocol != room.protocol {
 		return errorReply(fmt.Sprintf("version mismatch: the host runs protocol %d, you run %d", room.protocol, protocol))
@@ -276,7 +284,7 @@ func (s *Server) openRelay(join *Join) string {
 		return errorReply("the relay is full, try again later")
 	}
 	join.pair = pair
-	s.log("relay %d/%d for room %s", pair.ClientPort, pair.HostPort, join.room.code)
+	s.Log("relay %d/%d for room %s", pair.ClientPort, pair.HostPort, join.room.code)
 	return ""
 }
 
@@ -343,7 +351,7 @@ func (s *Server) closeRoom(room *Room) {
 		pair.Close()
 	}
 	delete(s.rooms, room.code)
-	s.log("room %s closed (%d rooms)", room.code, len(s.rooms))
+	s.Log("room %s closed (%d rooms)", room.code, len(s.rooms))
 }
 
 // Sweep forgets what has expired.
@@ -366,7 +374,7 @@ func (s *Server) Sweep() {
 		}
 	}
 	for addr, b := range s.limits {
-		if now.Sub(b.last) > time.Minute*2 {
+		if b.Idle(now) > time.Minute*2 {
 			delete(s.limits, addr)
 		}
 	}

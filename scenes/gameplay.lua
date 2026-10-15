@@ -52,11 +52,13 @@ local watchdog = require("core.watchdog")
 
 local gameplay = {}
 
--- Command line: `--level <name>` picks the level (default "example"; a client
--- plays the host's); `--host` / `--join <ip[:port]>` start network play;
+-- Command line (testing shortcuts; players use Host online / Join online in
+-- the menu): `--level <name>` picks the level (default "example"; a client
+-- plays the host's); `--host` / `--join <ip[:port]>` start network play
+-- directly over a LAN or 127.0.0.1, without the server;
 -- `--net-lag <ms> --net-loss <percent>` make this machine's connection worse
 -- for testing (core/net/session.lua); `--local-coop` turns on the deprecated
--- couch co-op. Internet play (Phase 3, until the lobby has it):
+-- couch co-op. Internet play through a server (your own for testing):
 -- `--host --online` opens a room on our server and shows its code;
 -- `--code <6 digits>` joins one; `--server <host[:port]>` names the server;
 -- `--relay-only` hides this machine's address behind the relay.
@@ -717,7 +719,11 @@ end
 local function showRoom()
     local code, state, reason = net:room()
     if state == "open" then
-        netStatus = "Room code " .. code .. (ONLINE.relayOnly and " (relay only)" or "")
+        if ONLINE.copied ~= code then
+            ONLINE.copied = code -- once per room: ready to paste to friends
+            pcall(love.system.setClipboardText, code)
+        end
+        netStatus = "Room code " .. code .. " (copied)" .. (ONLINE.relayOnly and " - relay only" or "")
     elseif state == "opening" then
         netStatus = "Opening a room..."
     elseif state == "failed" then
@@ -903,6 +909,11 @@ end
 
 function gameplay.getNetwork()
     return net
+end
+
+-- "host", "client" or nil (this machine alone).
+function gameplay.getMode()
+    return NET_MODE
 end
 
 -- Replace a slot's input source (tests drive players with scripted sources).

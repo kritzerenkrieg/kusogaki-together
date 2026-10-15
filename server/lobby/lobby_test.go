@@ -1,13 +1,15 @@
-package main
+package lobby
 
 import (
 	"encoding/binary"
 	"encoding/hex"
-	"net"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
 	"time"
+
+	"kusogaki-together/server/relay"
 )
 
 // A connect packet as LÖVE 11.5's ENet sends it (captured), with its data.
@@ -21,24 +23,6 @@ func connectPacket(data uint32) []byte {
 	return packet
 }
 
-func TestConnectData(t *testing.T) {
-	if data, ok := connectData(connectPacket(12345)); !ok || data != 12345 {
-		t.Fatalf("captured connect: %d %v", data, ok)
-	}
-	short := connectPacket(1)[:40]
-	if _, ok := connectData(short); ok {
-		t.Fatal("a truncated packet is not a connect")
-	}
-	other := connectPacket(1)
-	other[4] = 0x86 // a send command
-	if _, ok := connectData(other); ok {
-		t.Fatal("another command is not a connect")
-	}
-	if _, ok := connectData([]byte("KG1 poll 1 2")); ok {
-		t.Fatal("control text is not a connect")
-	}
-}
-
 type fixture struct {
 	t      *testing.T
 	server *Server
@@ -46,9 +30,10 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
-	f := &fixture{t: t, server: NewServer(NewRelay(41000, 41099)), clock: time.Unix(1000, 0)}
-	f.server.now = func() time.Time { return f.clock }
-	f.server.relay.now = f.server.now
+	f := &fixture{t: t, clock: time.Unix(1000, 0)}
+	r := relay.New(41000, 41099)
+	r.Now = func() time.Time { return f.clock }
+	f.server = New(r)
 	t.Cleanup(func() {
 		for _, room := range f.server.rooms {
 			f.server.closeRoom(room)
@@ -141,6 +126,13 @@ func TestRefusals(t *testing.T) {
 	if r := f.send("4.4.4.4:1", "join 999999 7 5 - 0"); strings.Contains(strings.Join(r, " "), "too many") {
 		t.Fatal("the limit refills")
 	}
+	// A client resending its join (replies lost) does not spend the limit.
+	first := f.send("5.5.5.5:1", "join "+code+" 7 333 - 0")
+	for i := 0; i < 3*limitBurst; i++ {
+		if again := f.send("5.5.5.5:1", "join "+code+" 7 333 - 0"); strings.Join(again, " ") != strings.Join(first, " ") {
+			t.Fatalf("resend %d: %v, want %v", i, again, first)
+		}
+	}
 }
 
 func TestRoomExpires(t *testing.T) {
@@ -164,30 +156,7 @@ func TestRoomExpires(t *testing.T) {
 	}
 }
 
-// udp opens a loopback socket standing in for a game's ENet socket.
-func udp(t *testing.T) *net.UDPConn {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
-}
-
-func sendTo(t *testing.T, conn *net.UDPConn, port int, data []byte) {
-	if _, err := conn.WriteToUDP(data, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func receive(conn *net.UDPConn) (string, bool) {
-	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	buf := make([]byte, maxPacket)
-	n, err := conn.Read(buf)
-	return string(buf[:n]), err == nil
-}
-
-func TestRelay(t *testing.T) {
+func TestRelayOnly(t *testing.T) {
 	f := newFixture(t)
 	r := f.send("1.1.1.1:5000", "open 7 111 - 1") // relay only
 	code, secret := r[1], r[2]
@@ -196,42 +165,14 @@ func TestRelay(t *testing.T) {
 	f.probe("1.1.1.1:26967", 111)
 	f.probe("2.2.2.2:40001", 222)
 	s := f.send("2.2.2.2:6000", "status "+id+" "+jsecret)
-	if s[0] != "relay" {
+	pair := f.server.joins[id].pair
+	if strings.Join(s, " ") != fmt.Sprintf("relay %d %d", pair.ClientPort, pair.ClientToken) {
 		t.Fatalf("a relay-only room never gives addresses: %v", s)
 	}
 	p := f.send("1.1.1.1:5000", "poll "+code+" "+secret)
-	if len(p) != 6 || p[2] != "relay" || strings.Contains(strings.Join(p, " "), "2.2.2.2") {
+	if strings.Join(p[2:], " ") != fmt.Sprintf("relay %s %d %d", id, pair.HostPort, pair.HostToken) {
 		t.Fatalf("the host gets the relay, not the client's address: %v", p)
 	}
-	pair := f.server.joins[id].pair
-	client, host, stranger := udp(t), udp(t), udp(t)
-
-	// Nothing passes before both ends showed their tokens.
-	sendTo(t, client, pair.ClientPort, connectPacket(pair.ClientToken))
-	sendTo(t, stranger, pair.HostPort, connectPacket(pair.ClientToken)) // wrong token
-	sendTo(t, host, pair.HostPort, connectPacket(pair.HostToken))
-	if got, ok := receive(client); ok {
-		t.Fatalf("the host's punch must not reach the client: %q", got)
-	}
-	// Now both ends are known: the client's connect retry reaches the host.
-	sendTo(t, client, pair.ClientPort, connectPacket(pair.ClientToken))
-	if got, ok := receive(host); !ok || got != string(connectPacket(pair.ClientToken)) {
-		t.Fatalf("client -> host: %q %v", got, ok)
-	}
-	sendTo(t, host, pair.HostPort, []byte("state"))
-	if got, ok := receive(client); !ok || got != "state" {
-		t.Fatalf("host -> client: %q %v", got, ok)
-	}
-	sendTo(t, stranger, pair.HostPort, []byte("spoof"))
-	sendTo(t, stranger, pair.ClientPort, []byte("spoof"))
-	if got, ok := receive(client); ok {
-		t.Fatalf("a stranger's datagram passed: %q", got)
-	}
-	if got, ok := receive(host); ok {
-		t.Fatalf("a stranger's datagram passed: %q", got)
-	}
-
-	// The room closing closes its pairs.
 	f.send("2.2.2.2:6000", "done "+id+" "+jsecret)
 	f.send("1.1.1.1:5000", "close "+code+" "+secret)
 	if f.server.relay.Count() != 0 {
@@ -255,7 +196,7 @@ func TestRelayOnRequestAndIdle(t *testing.T) {
 	if again := f.send("2.2.2.2:6000", "relay "+j[1]+" "+j[2]); again[1] != s[1] || f.server.relay.Count() != 1 {
 		t.Fatal("asking again gives the same pair")
 	}
-	f.clock = f.clock.Add(relayIdle + time.Second)
+	f.clock = f.clock.Add(relay.Idle + time.Second)
 	f.server.relay.Sweep()
 	if f.server.relay.Count() != 0 {
 		t.Fatal("a silent pair is closed")

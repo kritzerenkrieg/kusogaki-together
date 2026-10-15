@@ -154,85 +154,17 @@ These must land before any networking code. Each is useful on its own, and toget
 └── assets/           images, sounds, music
 ```
 
-### Asset formats
-Uploads may use common media types. The server normalizes them so every client gets something LÖVE 11.5 can load (verified: LÖVE 11.5 decodes png, jpg, wav, ogg and mp3; it does not decode gif or webp).
-
-| Upload | Stored as | Notes |
-|---|---|---|
-| `png` | `png` | decode check |
-| `jpg` / `jpeg` | `jpg` | decode check |
-| `webp` | `png` | transcoded (Go `golang.org/x/image/webp`) |
-| `gif`, single frame | `png` | transcoded |
-| `gif`, animated | `png` spritesheet + `<name>.anim.json` | frames laid out horizontally; sidecar has frame count, frame size and per-frame delays, read by `Entity` animation |
-| `wav`, `ogg`, `mp3` | unchanged | decode check, duration/size caps |
-
-- The file type comes from the magic bytes and must match the extension.
-- After normalization the server rewrites references in `level.json` and the scripts' asset names to the stored names. The package hash covers the normalized package, and the original upload is kept for re-processing.
-- **Limits** (initial values, tune later):
-
-| What | Limit |
-|---|---|
-| Package | 16 MB |
-| Image | 2048×2048 px |
-| GIF | 64 frames |
-| Sound effect | 10 s |
-| Music | 4 min / 10 MB per file |
-| Lua | 200 KB total |
-
-### Upload pipeline (`POST /levels`)
-1. **Auth and rate limit.**
-2. **Zip safety:**
-   - total and per-file size caps, and a compression-ratio cap (zip bombs);
-   - no absolute paths or `..`;
-   - a file whitelist by folder.
-3. **Validation:**
-   - `level.json` against a JSON schema; names match `^[%w_]+$`, as the loader already requires.
-   - Lua is text only (reject `\27Lua` bytecode) and within size limits.
-4. **Asset normalization** (see the table above).
-5. **Headless load test:**
-   - runs in a container with no network and CPU/memory/time limits;
-   - LÖVE with the hardened sandbox loads the level and steps 600 ticks with no input;
-   - any error or limit hit rejects the upload with the message.
-6. **Storage:**
-   - the package goes to S3 at `levels/<sha256>.zip`;
-   - a new immutable `level_versions` row goes into Postgres.
-
-### Data (Postgres)
-- `users(id, name, device_token_hash, created_at, banned)`
-- `levels(id, author_id, title, description, tags, status, created_at)`, where status is listed, unlisted or hidden
-- `level_versions(id, level_id, version, sha256, size, engine_version, created_at)`, immutable
-- `ratings(user_id, level_id, value)`, `play_stats(level_id, plays, clears)`, `reports(id, level_id, user_id, reason, created_at, resolved)`
-
-### API
-- `GET /levels?q=&tag=&sort=` lists levels, `GET /levels/{id}` gives details and versions, `GET /levels/{id}/versions/{v}/download` redirects to the package.
-- `POST /levels`, `POST /levels/{id}/versions`, `PATCH /levels/{id}` (title, description, tags, unlist).
-- `POST /levels/{id}/rate`, `POST /levels/{id}/report`.
+Server side (asset formats and limits, the upload pipeline, data, API, moderation): `server/repository/README.md`. Phase 4, design only.
 
 ### Client side
 - Downloads go to the save directory (`online/<sha256>.zip`). The client verifies them with `love.data.hash("sha256", …)` before mounting.
 - Only levels with a verified hash from the repository are playable online.
 
-### Moderation
-- Reports past a threshold auto-hide a level until an admin reviews it.
-- Authors can unlist. Versions are never edited, only superseded.
-
 ---
 
 ## Public lobby
 
-- `POST /rooms` creates a room. It holds:
-  - level id + version + sha256;
-  - max players (2–5);
-  - public or private (private rooms get a numeric join code, digits only);
-  - a display name.
-- `GET /rooms` lists public rooms that aren't full, with level title, players and region/ping hint.
-- `POST /rooms/{id}/join` (or `/rooms/join/{code}`) returns a session token plus what's needed for connectivity (below).
-- **Liveness:**
-  - The host heartbeats every 5 s with its player count. A room disappears after 15 s without a heartbeat.
-  - Clients poll room state while waiting. LÖVE has no WebSocket, and polling is enough at lobby rates.
-- **Before connecting:**
-  - The client downloads and verifies the level.
-  - The host checks the level hash and engine version in the ENet connect handshake, and rejects mismatches with a reason.
+Rooms with codes are built (Phase 3); the public room list is Phase 5. Both are server side: `server/lobby/README.md`.
 
 ### HTTPS
 - LÖVE 11.5 ships `socket` (luasocket) but no TLS module: `ssl` and `https` are not available.
@@ -244,7 +176,7 @@ Uploads may use common media types. The server normalizes them so every client g
 
 ## Connectivity
 
-Play is peer to peer: clients talk straight to the host's machine and no server runs the game. A small server of ours (`server/`, Go, plain UDP) only introduces the machines in a room and, when that fails, relays their packets. The game's netcode does not change: ENet runs end to end, direct or through the relay.
+Play is peer to peer: clients talk straight to the host's machine and no server runs the game. A small server of ours (`server/`, Go, plain UDP; `server/README.md`, deployment in `server/DEPLOYMENT.md`) only introduces the machines in a room and, when that fails, relays their packets. The message formats and limits are in `server/lobby/README.md` and `server/relay/README.md`; this section is the game's view. The game's netcode does not change: ENet runs end to end, direct or through the relay.
 
 1. **Rooms and the control channel.** The game talks to the server over a separate UDP socket (luasocket) with short text messages (`KG1 <verb> ...`), each retried until answered. A host `open`s a room and gets a 6-digit code and a secret; it then `poll`s every 250 ms, which keeps the room alive (gone 15 s after the last poll) and fetches who wants to join. A client `join`s with the code and then polls its join until the server says where to connect.
 2. **Address discovery (probes).** The server must learn the public `ip:port` of each machine's *game* socket, which only ENet uses. So the game makes an ENet connect attempt from that socket to the server, carrying a random 31-bit probe token in ENet's connect data; the server reads the sender address and the token from the raw packet and never answers (the game then resets that peer). The host repeats its probe every 10 s to keep its router mapping.
@@ -329,8 +261,7 @@ Tracked in `OPEN_DECISION.md`.
 - **The host is trusted by its peers** (co-op), so there's no anti-cheat beyond host-side validation. The host simulates every player from inputs, so a modified client can only send inputs; a modified host can do anything in its own room.
 - **No encryption** of game traffic (decided 2026-10-15): only inputs and game state travel. Someone on the network path could read or tamper with one co-op game; nothing private is exposed. The room code and session token decide who joins; account credentials (Phase 4) go over HTTPS.
 - **A level's custom controller script runs on every machine** (for that machine's own player), under the same sandbox and limits as on the host.
-- **Rate limits:** uploads, room creation, joins and reports are rate-limited per account and IP.
-- **Accounts:** guest device tokens at first, stored hashed. OAuth can be added later.
+- **Rate limits and accounts:** server side, `server/README.md` (Rules) and `server/repository/README.md` (Accounts).
 
 ---
 
