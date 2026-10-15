@@ -10,7 +10,25 @@ Last updated: 2026-10-15.
 
 ## Open
 
-Nothing open. Add new questions here as rows: | # | Decision | Proposal | Choice | Status | Goes to |
+Add new questions here as rows: | # | Decision | Proposal | Choice | Status | Goes to |
+
+### G. Other players look jerky on clients (playtest 2026-10-15, phone hotspot)
+
+On the host every player moves smoothly. On a client, other players doing quick moves (tapping left and right, short hops) jerk: the client keeps predicting a player's last input (still walking right, still holding jump), and when the host's state shows otherwise the correction glides them back over ~100 ms (`interp.correct`). Steady running looks fine; every quick change overshoots, then gets pulled back.
+
+How long a client B predicts another player A wrongly (A's own ping adds nothing, A's inputs reach the host early):
+
+| Part | Size | Removable? |
+|---|---|---|
+| B's round trip to the host | RTT (e.g. 100 ms) | No, while clients run ahead of the host (the price of instant own controls) |
+| Lead cushion, `inputsync.TARGET_LEAD` | 4 ticks = 67 ms | Yes, for knowing others' inputs: see G1 |
+| Host states at 20 Hz | 0–50 ms, ~25 ms average | Yes, same |
+
+About 190 ms at 100 ms ping. The client learns others' inputs only from the host's states, after the host has used them. G1 (decided, below) removes the lead and the wait for another client's player; for the host's player only the wait goes (the host has no early inputs).
+
+| # | Decision | Proposal | Choice | Status | Goes to |
+|---|---|---|---|---|---|
+| G2 | If G1 is not enough: how clients draw other players | **Draw others from the host's states** (buffered one state interval, blended between states), exactly as the host showed them, about one round trip plus ~50 ms behind the own player; the simulation still predicts them for collisions. Near the own player (within about a tile) draw the predicted position instead, so stomps and pushes look right. Rejected: slower correction glide for others only (still overshoots, looks floaty); input delay for everyone (every player's own controls lag, host too). | | open | `NETWORKING.md` Client presentation |
 
 
 
@@ -20,6 +38,8 @@ Nothing open. Add new questions here as rows: | # | Decision | Proposal | Choice
 
 Most recent first. Each line: date, decision (choice number), where it is written.
 
+- 2026-10-15: **Host states stay at 20 Hz.** With G1 the inputs travel every tick; 60 Hz states measured no smoother (200 ms round trip, with and without 10% loss: mean error 20–22 px either way) but cost 2.7× the upload (45 vs 17 KB/s per client) and about 3× the CPU on both sides. (G3; `NETWORKING.md` Budget)
+- 2026-10-15: **The host forwards every player's inputs to the other clients each tick** (`ahead`), and clients replay with the real inputs they have; a forwarded input that shows a wrong prediction replays at once. Client-to-client at 200 ms: mean error 31.9 → 19.7 px. (G1; `NETWORKING.md` Host → clients (others' inputs), `DEVELOPMENT_PHASE.md`)
 - 2026-10-15: **Relay only (hide my IP)** is a player option in the lobby: that player's traffic always goes through the relay, so others never see its IP. Peer to peer stays the default. (`NETWORKING.md` Connectivity)
 - 2026-10-15: A privacy policy is drafted in `PRIVACY.md` (future work: finish before the first public release with internet play). (`PRIVACY.md`)
 - 2026-10-15: **Phase 2 is closed.** Carrying players and checkpoints were tested online by hand; with the LAN run and the loss-and-delay hand test, that completes it. (F1; `DEVELOPMENT_PHASE.md`)

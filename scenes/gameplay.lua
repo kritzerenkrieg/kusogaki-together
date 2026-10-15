@@ -111,12 +111,17 @@ local net = nil             -- the network session (core/net/session.lua), if an
 local netStatus = nil       -- what to tell the player about the session ("connecting", a reason)
 local states = nil          -- host: statesync.host(); client: statesync.client()
 local inputs = nil          -- host: inputsync.host(); client: inputsync.client() (its own)
-local remoteMasks = {}      -- client: id -> the input the host last used for that player
+local remoteMasks = {}      -- client: id -> the input the host used for that player at its state's tick
+local remoteFrames = {}     -- client: id -> tick -> that player's input, forwarded by the host (ahead)
+local usedRemote = {}       -- client: tick -> id -> the input it predicted for that player then
+local wrongFrom = nil       -- client: the first tick predicted with an input now known to be wrong
+local forwarded = {}        -- host: client id -> player id -> the newest input tick sent to it
 local predicting = false    -- client: has a host state and runs ahead of it
 local margin = nil          -- client: how many ticks early its inputs reach the host (smoothed)
 local presented = {}        -- client: tick -> event signatures already shown
 local predicted = {}        -- client: tick -> its predicted state then (flat), for ticks the host sends
-local SEND_EVERY = 3        -- host ticks between states (20 a second)
+local SEND_EVERY = 3        -- host ticks between states (20 a second; G3)
+local MARGIN_KEEP = 0.9 ^ (SEND_EVERY / 3) -- margin smoothing per state: the same per second at any rate
 local NET_PORT, NET_BIND = nil, nil -- tests host on another port and address
 
 local MAX_SEED = 2147483646 -- seeds are 1..MAX_SEED (the MINSTD generator's range)
@@ -212,9 +217,11 @@ local function buildLevel(seed)
     if NET_MODE == "host" then
         statesync.reset(states) -- every client gets a full state of the new level
         inputsync.reset(inputs) -- tick numbers start again
+        forwarded = {}
     elseif NET_MODE == "client" then
         states, inputs = statesync.client(), inputsync.client()
         remoteMasks, predicting, margin, presented, predicted = {}, false, nil, {}, {}
+        remoteFrames, usedRemote, wrongFrom = {}, {}, nil
     end
     votes, countdown = {}, nil
     tick = 0
@@ -404,6 +411,7 @@ local hostHandler = {
     left = function(id)
         remoteIds[id] = nil
         inputsync.removePlayer(inputs, id)
+        forwarded[id] = nil
         statesync.removeClient(states, id)
         local player = playerWithId(id)
         if player then
@@ -424,17 +432,34 @@ local hostHandler = {
     end,
 }
 
+-- Client: the input player `id` most likely has at tick t: the one the host
+-- forwarded for it, else the newest known before it.
+local function remoteMaskAt(id, t)
+    local frames = remoteFrames[id]
+    if frames then
+        for u = t, math.max(statesync.newest(states) + 1, t - 120), -1 do
+            if frames[u] then
+                return frames[u]
+            end
+        end
+    end
+    return remoteMasks[id] or 0
+end
+
 -- Client: run one tick `t` of the level with this machine's input for it
--- and the others' last known inputs, and show what is new in it.
+-- and the others' known or last known inputs, and show what is new in it.
 local function simulate(t, step)
     local names = level.actionNames
+    local used = {}
     for _, player in ipairs(level.players) do
         if player == slots[1].player then
             player.input = input.unpack(inputsync.maskAt(inputs, t), names)
         else
-            player.input = input.unpack(remoteMasks[player.id] or 0, names)
+            used[player.id] = remoteMaskAt(player.id, t)
+            player.input = input.unpack(used[player.id], names)
         end
     end
+    usedRemote[t], usedRemote[t - 120] = used, nil
     level:update(step)
     tick = t
     presentOnce(t, level:takeEvents())
@@ -447,13 +472,18 @@ end
 
 -- Client: a host state after tick h. The first one starts prediction a
 -- round trip and a little ahead of it. A later one that matches what this
--- machine predicted for tick h changes nothing; otherwise it replaces the
+-- machine predicted for tick h changes nothing, unless a forwarded input
+-- showed a later tick was predicted wrong; otherwise it replaces the
 -- prediction for tick h and the ticks since are replayed with this
--- machine's inputs.
+-- machine's inputs and the others' known ones.
 local function reconcile(state, h, flat)
-    if predicting and predicted[h] and statesync.same(predicted[h], flat) then
+    if wrongFrom and wrongFrom <= h then
+        wrongFrom = nil -- the host's state already has it right
+    end
+    if predicting and not wrongFrom and predicted[h] and statesync.same(predicted[h], flat) then
         return -- predicted right
     end
+    wrongFrom = nil
     local now = tick
     local before = {}
     for _, body in ipairs(movingBodies()) do
@@ -525,6 +555,13 @@ local clientHandler = {
         for _, entry in ipairs(message.inp) do
             remoteMasks[entry[1]] = entry[2]
         end
+        for _, frames in pairs(remoteFrames) do
+            for t in pairs(frames) do
+                if t <= h then
+                    frames[t] = nil
+                end
+            end
+        end
         votes = {}
         for _, id in ipairs(message.vt) do
             votes[id] = true
@@ -532,9 +569,38 @@ local clientHandler = {
         countdown = message.cd or nil
         if predicting and message.ack > 0 then -- the host has this machine's inputs
             local early = message.ack - h -- how far ahead of the host they arrived
-            margin = margin and margin + (early - margin) * 0.1 or early
+            margin = margin and early + (margin - early) * MARGIN_KEEP or early
         end
         reconcile(state, h, flat)
+    end,
+    -- The others' inputs, forwarded by the host every tick. Any that differs
+    -- from what this machine predicted for a tick it already ran marks a
+    -- replay (gameplay.update), from the host's newest state.
+    ahead = function(message)
+        if message.g ~= generation or not level then
+            return
+        end
+        local since = statesync.newest(states)
+        for _, entry in ipairs(message.p) do
+            local id, n, f = entry[1], entry[2], entry[3]
+            if id ~= slots[1].id and remoteIds[id] then
+                local frames = remoteFrames[id] or {}
+                remoteFrames[id] = frames
+                local first = n - #f + 1
+                for i, mask in ipairs(f) do
+                    if first + i - 1 > since then
+                        frames[first + i - 1] = mask
+                    end
+                end
+                for t = math.max(first, since + 1), tick do
+                    local used = usedRemote[t]
+                    if used and used[id] ~= nil and used[id] ~= remoteMaskAt(id, t) then
+                        wrongFrom = math.min(wrongFrom or t, t)
+                        break
+                    end
+                end
+            end
+        end
     end,
     restart = function(message)
         if message.generation <= generation then
@@ -613,7 +679,7 @@ local function voteList()
     return list
 end
 
--- Host, 20 times a second: save the level's state after this tick (under
+-- Host, after every SEND_EVERY ticks: save the level's state (under
 -- script limits: script state that is not plain data stops the level) and
 -- send each client its delta, with the inputs every player used.
 local function sendStates()
@@ -642,11 +708,35 @@ local function sendStates()
 end
 
 -- Host: one tick, every player with the input it has for that tick.
+-- Host, every tick: each client gets the other players' inputs, what the
+-- host used up to this tick and what it has for its next ones.
+local function sendAhead()
+    for id in pairs(states.clients) do
+        local sent = forwarded[id] or {}
+        forwarded[id] = sent
+        local list = {}
+        for _, player in ipairs(level.players) do
+            if player.id ~= id then
+                local n, f = inputsync.forward(inputs, player.id, tick, sent[player.id] or 0)
+                if n then
+                    list[#list + 1] = { player.id, n, f }
+                    sent[player.id] = n
+                end
+            end
+        end
+        if #list > 0 then
+            net:sendTo(id, { t = "ahead", g = generation, p = list }, true)
+        end
+    end
+end
+
 local function hostTick(step)
     local t = tick + 1
     for _, player in ipairs(level.players) do
         if remoteIds[player.id] then
             player.input = input.unpack(inputsync.take(inputs, player.id, t), level.actionNames)
+        elseif net then
+            inputsync.played(inputs, player.id, t, input.pack(player.input, level.actionNames))
         end
     end
     local wasFinished = level.finished
@@ -657,8 +747,11 @@ local function hostTick(step)
         gameplay.resetRespawns()
     end
     updateVote(step)
-    if net and tick % SEND_EVERY == 0 then
-        sendStates()
+    if net then
+        sendAhead()
+        if tick % SEND_EVERY == 0 then
+            sendStates()
+        end
     end
 end
 
@@ -742,6 +835,13 @@ function gameplay.update(delta)
         return
     end
     local client = NET_MODE == "client"
+    if client and wrongFrom then -- a forwarded input showed a wrong prediction
+        local state, h, flat = statesync.latest(states)
+        if state then
+            reconcile(state, h, flat)
+        end
+        wrongFrom = nil
+    end
     alpha = clock:advance(client and delta * clientRate() or delta, function(step)
         interp.record(movingBodies())
         if client then

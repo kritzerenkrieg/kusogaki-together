@@ -1,6 +1,6 @@
--- Host state to clients (hybrid rollback, NETWORKING.md). 20 times a second
--- the host saves its level's whole state (core/level/fullstate.lua) after
--- tick h and sends each client what changed since the state that client
+-- Host state to clients (hybrid rollback, NETWORKING.md). After its ticks
+-- (every third: SEND_EVERY in scenes/gameplay.lua) the host saves its level's
+-- whole state (core/level/fullstate.lua) and sends each client what changed since the state that client
 -- last acknowledged, field by field, or the whole state when it has none the
 -- host still remembers. A hash of the whole state travels with it: a client
 -- whose rebuilt state does not match asks for a full one (acknowledges 0).
@@ -19,7 +19,7 @@ local wire = require("core.wire")
 
 local statesync = {}
 
-statesync.HISTORY = 40     -- states remembered (2 s at 20 Hz)
+statesync.HISTORY = 120    -- ticks of states remembered (2 s)
 statesync.FULL_EVERY = 1   -- s between full states to a client without a usable base
 
 -- ── Flat form ─────────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ function statesync.record(host, h, state)
     local entry = { h = h, flat = flat, encoded = encoded, hash = hash }
     host.history[h] = entry
     for old in pairs(host.history) do
-        if old <= h - statesync.HISTORY * 3 then
+        if old <= h - statesync.HISTORY then
             host.history[old] = nil
         end
     end
@@ -202,6 +202,21 @@ end
 
 function statesync.client()
     return { history = {}, newest = 0, needFull = false }
+end
+
+-- The newest host state's tick (0: none yet).
+function statesync.newest(client)
+    return client and client.newest or 0
+end
+
+-- The newest host state again: the state (for fullstate.restore), its tick
+-- and its flat form, or nil.
+function statesync.latest(client)
+    local entry = client.history[client.newest]
+    if not entry then
+        return nil
+    end
+    return statesync.unflatten(entry.flat), client.newest, entry.flat
 end
 
 -- The host tick to acknowledge.
@@ -255,7 +270,7 @@ function statesync.receive(client, message)
     end
     client.history[message.h] = { flat = flat, encoded = encoded, keys = keys }
     for h in pairs(client.history) do
-        if h <= message.h - statesync.HISTORY * 3 then
+        if h <= message.h - statesync.HISTORY then
             client.history[h] = nil
         end
     end

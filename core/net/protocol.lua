@@ -22,6 +22,9 @@
 --                   the host's state after tick h, a delta against the one the
 --                   client acknowledged (STATE) or full (base 0, RELIABLE);
 --                   core/net/statesync.lua
+--   host -> client  ahead { g, p }   every tick: p = { id, n, f } per other
+--                   player, its input masks for ticks n-#f+1..n (STATE;
+--                   inputsync.forward)
 -- A client acknowledges states in its input messages (k).
 --
 -- Framing: a message is its core/wire.lua bytes, or, when that is at least
@@ -121,6 +124,19 @@ local function isInputs(value)
     return true
 end
 
+local function isForwarded(value)
+    if not isList(value, protocol.MAX_PLAYERS) then
+        return false
+    end
+    for _, entry in ipairs(value) do
+        if type(entry) ~= "table" or not isInt(entry[1], 1, protocol.MAX_PLAYERS) or not isSeq(entry[2])
+            or not inputsync.validMasks(entry[3], inputsync.FORWARD) or #entry[3] == 0 or #entry[3] > entry[2] then
+            return false
+        end
+    end
+    return true
+end
+
 local function isIdList(value)
     if not isList(value, protocol.MAX_PLAYERS) then
         return false
@@ -155,6 +171,7 @@ local SHAPES = {
     vote = { on = function(v) return type(v) == "boolean" end },
     left = { id = function(v) return isInt(v, 1, protocol.MAX_PLAYERS) end },
     input = { g = isGeneration, n = isSeq, f = inputsync.validMasks, k = isSeq },
+    ahead = { g = isGeneration, p = isForwarded },
     snap = {
         g = isGeneration, h = isSeq, base = isSeq, set = isSets, del = isKeys,
         hash = function(v) return type(v) == "string" and #v == 16 and v:match("^%x+$") ~= nil end,

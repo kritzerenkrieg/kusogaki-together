@@ -248,6 +248,25 @@ do
     check("a missing input repeats the last one", inputsync.take(host, 2, 13) == 7)
     check("inputs for ticks already run are dropped", host.players[2].frames[10] == nil
         and inputsync.newest(host, 2) == 12)
+
+    -- Forwarding to the other clients: what the host used, then what it has
+    -- for its next ticks.
+    inputsync.receive(host, 2, { n = 17, f = { 8, 9, 9, 1 } }, 13) -- ticks 14..17
+    inputsync.take(host, 2, 14)
+    local n, f = inputsync.forward(host, 2, 14, 0)
+    check("forwarded inputs: used ones, then the ones the host has next", n == 17
+        and table.concat(f, ",") == "6,7,7,8,9,9,1", tostring(n) .. " " .. table.concat(f or {}, ","))
+    n, f = inputsync.forward(host, 2, 14, 17)
+    check("forwarding repeats the last ticks already sent", n == 17 and #f == inputsync.REDUNDANCY - 1)
+    inputsync.played(host, 1, 14, 3)
+    n, f = inputsync.forward(host, 1, 14, 0)
+    check("the host's own player is forwarded up to its tick", n == 14 and table.concat(f, ",") == "3")
+    local ahead = { t = "ahead", g = 1, p = { { 2, 17, { 6, 7, 7, 8, 9, 9, 1 } }, { 1, 14, { 3 } } } }
+    local long = {}
+    for i = 1, inputsync.FORWARD + 1 do long[i] = 0 end
+    check("ahead messages are checked", protocol.decode(protocol.encode(ahead), 1024) ~= nil
+        and protocol.decode(wire.encode({ t = "ahead", g = 1, p = { { 2, 40, long } } }), 1024) == nil
+        and protocol.decode(wire.encode({ t = "ahead", g = 1, p = { { 2, 3, { 1, 2, 3, 4 } } } }), 1024) == nil)
 end
 
 -- ── Host state to clients (core/net/statesync.lua) ──────────────────────
@@ -324,6 +343,7 @@ do
         joined = function() end,
         left = function() end,
         snap = function(message) got.snaps[#got.snaps + 1] = message end,
+        ahead = function(message) got.ahead = message end,
         closed = function(reason) got.closed = reason end,
     }))
     local function run(frames, done)
@@ -372,6 +392,10 @@ do
         if entry[1] == got.welcome.you and entry[2] == right then usedRight = true end
     end
     check("states carry the input each player used", usedRight)
+    local hostEntry = got.ahead and got.ahead.p[1]
+    check("the host forwards the other players' inputs every tick", hostEntry and hostEntry[1] == 1
+        and #got.ahead.p == 1 and hostEntry[2] >= last.h and hostEntry[3][#hostEntry[3]] == 0,
+        hostEntry and (hostEntry[1] .. " " .. hostEntry[2] .. " vs " .. last.h))
     check("after acknowledging, the client gets deltas", last.base > 0 and #last.set < #got.snaps[1].set)
     check("states tell how early its inputs arrive", early >= 1, early)
 

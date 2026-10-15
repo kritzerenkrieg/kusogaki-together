@@ -364,6 +364,7 @@ Client.__index = Client
 --   restart(message)           { seed, generation, players }
 --   joined(id), left(id)       another player came or went
 --   snap(message)              the host's state (core/net/statesync.lua)
+--   ahead(message)             the others' inputs (optional; inputsync.forward)
 --   closed(reason)             the session ended (refused, host gone, timeout)
 -- Returns the client, or nil and an error.
 function session.join(address, handler, options)
@@ -440,7 +441,7 @@ end
 local CLIENT_EXPECTS = {
     hello = { level = true },
     ready = { welcome = true },
-    joined = { restart = true, joined = true, left = true, snap = true },
+    joined = { restart = true, joined = true, left = true, snap = true, ahead = true },
 }
 
 local function clientReceive(self, data)
@@ -472,8 +473,8 @@ local function clientReceive(self, data)
         self.handler.welcome(message)
     elseif message.t == "joined" or message.t == "left" then
         self.handler[message.t](message.id)
-    else
-        self.handler[message.t](message) -- restart, snap
+    elseif self.handler[message.t] then
+        self.handler[message.t](message) -- restart, snap, ahead
     end
 end
 

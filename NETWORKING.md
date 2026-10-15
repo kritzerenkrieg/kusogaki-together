@@ -32,6 +32,7 @@ Sessions hold up to **5 players** (1 host + 4 clients).
 **Hybrid rollback (decided 2026-10-14).** Nothing is synced by copying memory, and nobody declares fields. What travels:
 - **Inputs, from each client:** its player's input frame for every tick, as a bit mask, each message repeating the last 8 ticks; unreliable, 60 a second.
 - **The host's state, to each client:** the level's whole state after a host tick (every plain field of every player and entity, list orders, the random generator, level state; `core/level/fullstate.lua`), as a delta against the state that client acknowledged; 20 a second, with the inputs every player used.
+- **The others' inputs, to each client:** every tick, the masks every other player used up to the host's tick and the ones the host already has for its next ticks; unreliable, 60 a second (G1, 2026-10-15).
 - **Session messages:** join, restart, votes, leaving; reliable.
 
 Every machine runs the same simulation code. The host's simulation is the only truth; a client's is a prediction it corrects whenever the host's state arrives. Script code runs everywhere (the client predicts with it too); what a script keeps in its own local variables is not saved or sent, so changing state belongs on objects (`MODDING.md`).
@@ -45,12 +46,12 @@ Rejected: **full rollback** (GGPO: inputs only, every machine authoritative). Lu
 | State | The truth | How it travels |
 |---|---|---|
 | everything in the level: players, enemies, blocks, props, scripts' object state, score, win/lose | **host** (its simulation) | state deltas, 20 a second |
-| what a player pressed | **that player's machine** | inputs, every tick, repeated |
+| what a player pressed | **that player's machine** | inputs, every tick, repeated; the host forwards them to the others every tick |
 | who is in the session, level, seed, restarts, votes | **host** | reliable |
 
 - **One simulation decides.** The host simulates every player from their inputs. A client's own simulation is a prediction: it never decides anything another machine sees.
 - **Late inputs.** The host uses each player's input at its tick; when it has none yet it repeats that player's last input, and the client's prediction is corrected by the next state. Clients run just far enough ahead that their inputs arrive about 4 ticks early (`inputsync.TARGET_LEAD`); each state tells a client how early its inputs arrived, and the client runs slightly faster or slower (at most ±25%) to keep that.
-- **Corrections.** A client remembers what it predicted for every tick the host sends. A host state that matches changes nothing (the usual case). One that differs is restored and the client replays its own inputs since, with the others' inputs repeated; what moved is drawn gliding from its predicted place (`interp.correct`).
+- **Corrections.** A client remembers what it predicted for every tick the host sends. A host state that matches changes nothing (the usual case). One that differs is restored and the client replays its own inputs since, with the others' forwarded inputs (the newest one repeated past what it knows). A forwarded input that differs from what the client predicted for a tick it already ran replays at once, from the host's newest state, without waiting for a state that shows it. What moved is drawn gliding from its predicted place (`interp.correct`).
 - **Level generation.** Every level (re)start gets a generation number (with `restart{seed}`). Every message carries it; anything from an older generation is dropped.
 - **Detect, don't hope.** Every state carries a hash of the whole state; a client whose rebuilt state does not match acknowledges 0 and gets a full one.
 - **Everything from the wire is untrusted input.** The host validates every client message (rates, sizes, ranges, generation numbers); input masks are only buttons, so a client cannot move its player anywhere the rules do not allow. Clients validate the host's messages too (`core/wire.lua` is safe for untrusted bytes; `gameplay.restart(seed)` refuses a bad seed).
@@ -201,13 +202,18 @@ Network load stays as small as possible; speed beats completeness.
 - **No session logging or recording.** Gameplay sessions are not logged, recorded or replayed; nothing is sent or stored just to keep a history.
 - **Only what changed.** States are deltas against what the client acknowledged; inputs are bit masks.
 - **Newest state, not history.** Unreliable updates are never resent; a lost one is replaced by the next. Only full states and session messages are reliable.
-- **Low, fixed rates.** Host states at **20 Hz**; client inputs every tick but only a few bytes each (8 masks).
+- **Low, fixed rates.** Host states at **20 Hz**; client inputs every tick but only a few bytes each (8 masks), forwarded by the host to the others every tick. 60 Hz states were measured (G3, 2026-10-15): no smoother once inputs are forwarded, 2.7× the upload, about 3× the CPU.
 - **Exact values, compressed messages.** States are not quantized: a client restores the host's state and replays from it, so it must be the host's exact state (the hash covers every value). Instead, every message of 128 bytes or more travels LZ4-compressed when that is smaller (`core/net/protocol.lua`, Framing).
 - **Small packets.** Each packet fits one UDP datagram (well under the ~1200-byte safe MTU); a full snapshot that does not fit is split, never sent as one huge packet.
 
 ### Client → host (inputs)
 - Built: `core/net/inputsync.lua`. Every tick a client records its input mask and sends `input{g, n, f, k}`: masks for ticks n-7..n, and `k`, the newest host state it has (its acknowledgement).
 - The host keeps each player's masks by tick and uses them at its own tick; one that arrives after its tick still becomes that player's latest input. At most 120 input messages a second are taken from one client.
+
+### Host → clients (others' inputs)
+- Built: `inputsync.forward`, `scenes/gameplay.lua` (sendAhead). Decided in `OPEN_DECISION.md` G1. After every tick the host sends each client `ahead{g, p}`: for every other player `{id, n, f}`, the masks for ticks n-#f+1..n: what the host used up to its tick, then what it already has for its next ticks (exactly what it will use), at most 32 ticks, repeating the last 8 ticks already sent to that client. Unreliable.
+- **Why:** a client used to learn another player's input only from the host's state, after the host had used it. Clients send their inputs about 4 ticks early (`TARGET_LEAD`), so forwarding them at once lets another client know them about one round trip after they were pressed, instead of a round trip plus the lead plus the wait for the next state. The host's own player has no early inputs: for it only the wait for the next state goes.
+- **Measured** (scripted player tapping left/right and hopping, two clients at 200 ms round trip, `--sim-test` harness): where a client draws the other client's player vs where the host has it at the same tick, mean 31.9 → 19.7 px, p95 63.7 → 48.7 px; frame-to-frame jerk down a third. The message is about 75–85 B (~7 KB/s per client with headers).
 
 ### Host → clients (state)
 - Built: `core/net/statesync.lua`, `core/level/fullstate.lua`. After every 3rd tick (20 a second) the host saves its level's whole state and sends each client `snap{g, h, base, set, del, hash, ack, inp, vt, cd}`: the fields changed since the state that client acknowledged (`base`), or all of them (`base` 0, reliable; on join, restart, a lost base or a hash mismatch; at most once a second), with the newest input tick it has from that client (`ack`), the input every player used at tick h (`inp`, to predict the others) and the restart votes.
@@ -221,7 +227,7 @@ Carrying another player online works through the same rules (tested by hand, 202
 
 ### Client presentation
 - **Own player:** predicted, no delay.
-- **Other players and the world:** predicted with the others' last known inputs; corrections glide over about 100 ms (`interp.correct`, a correction over 160 px snaps).
+- **Other players and the world:** predicted with the others' forwarded inputs, the newest one repeated past what is known; corrections glide over about 100 ms (`interp.correct`, a correction over 160 px snaps).
 - **Testing a bad connection:** `--net-lag <ms> --net-loss <percent>` on any machine adds that round trip and loses that share of unreliable messages both ways (`session.emulate`).
 
 ### Open questions

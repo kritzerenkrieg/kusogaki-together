@@ -6,11 +6,18 @@
 -- (the client's prediction is then corrected by the host's state).
 --
 -- input message: { g, n, f }: f = masks for ticks n - #f + 1 .. n.
+--
+-- The host also forwards every player's inputs to the other clients each
+-- tick (ahead message, inputsync.forward): what it used up to its tick and
+-- what it already has for the ticks after. Clients run ahead of the host, so
+-- they learn others' inputs about a round trip after they were pressed
+-- instead of waiting for the host's state.
 local inputsync = {}
 
 inputsync.REDUNDANCY = 8  -- ticks each input message repeats (133 ms of loss)
 inputsync.KEEP = 240      -- ticks of own inputs a client keeps (4 s) for replays
 inputsync.TARGET_LEAD = 4 -- ticks early a client's inputs should reach the host (frame jitter)
+inputsync.FORWARD = 32    -- at most this many ticks of one player per ahead message
 
 -- ── Client ────────────────────────────────────────────────────────────────
 
@@ -54,7 +61,7 @@ function inputsync.host()
 end
 
 function inputsync.addPlayer(host, id)
-    host.players[id] = { frames = {}, newest = 0, last = 0 }
+    host.players[id] = { frames = {}, newest = 0, last = 0, used = {} }
 end
 
 function inputsync.removePlayer(host, id)
@@ -64,7 +71,7 @@ end
 -- A new level: tick numbers start again.
 function inputsync.reset(host)
     for _, player in pairs(host.players) do
-        player.frames, player.newest, player.last, player.lastTick = {}, 0, 0, 0
+        player.frames, player.newest, player.last, player.lastTick, player.used = {}, 0, 0, 0, {}
     end
 end
 
@@ -102,7 +109,46 @@ function inputsync.take(host, id, t)
     end
     player.frames[t] = nil
     player.frames[t - 600] = nil
+    inputsync.played(host, id, t, player.last)
     return player.last
+end
+
+-- Player `id` played `mask` at host tick t (the host's own players say so
+-- themselves; take does it for clients).
+function inputsync.played(host, id, t, mask)
+    local player = host.players[id]
+    if not player then
+        inputsync.addPlayer(host, id)
+        player = host.players[id]
+    end
+    player.used[t] = mask
+    player.used[t - inputsync.FORWARD] = nil
+end
+
+-- Player `id`'s inputs to forward after host tick `hostTick`, to a client
+-- that was last sent the ones up to tick `sent`: masks for ticks
+-- n - #f + 1 .. n, the ones the host used and then the ones it has for its
+-- next ticks (exactly what it will use), repeating the last 8 already sent
+-- in case a message was lost. Returns n, f, or nil when nothing is known.
+function inputsync.forward(host, id, hostTick, sent)
+    local player = host.players[id]
+    if not player or not player.used[hostTick] then
+        return nil
+    end
+    local n = hostTick
+    while player.frames[n + 1] and n < hostTick + inputsync.FORWARD do
+        n = n + 1
+    end
+    local f = {}
+    for t = math.max(n - inputsync.FORWARD + 1, sent - inputsync.REDUNDANCY + 1), n do
+        local mask = t <= hostTick and player.used[t] or player.frames[t]
+        if mask then
+            f[#f + 1] = mask
+        else
+            f = {} -- a gap (just joined): only the ticks after it
+        end
+    end
+    return n, f
 end
 
 -- The newest input tick the host has from player `id`.
@@ -111,8 +157,8 @@ function inputsync.newest(host, id)
     return player and player.newest or 0
 end
 
-function inputsync.validMasks(list)
-    if type(list) ~= "table" or #list > inputsync.REDUNDANCY or next(list, #list > 0 and #list or nil) ~= nil then
+function inputsync.validMasks(list, maxLength)
+    if type(list) ~= "table" or #list > (maxLength or inputsync.REDUNDANCY) or next(list, #list > 0 and #list or nil) ~= nil then
         return false
     end
     for _, mask in ipairs(list) do
