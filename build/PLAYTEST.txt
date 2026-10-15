@@ -1,0 +1,19 @@
+Kusogaki Together - play test build
+
+HOW TO START
+  Windows: unzip, open the folder, run "Kusogaki Together.exe".
+           If SmartScreen warns: More info -> Run anyway (the build is not signed).
+  macOS:   unzip, move "Kusogaki Together.app" to Applications. The build is not
+           signed, so the first time open Terminal and run:
+               xattr -cr "/Applications/Kusogaki Together.app"
+           then open it normally.
+  Linux:   chmod +x kusogaki-together-*-linux-x86_64.AppImage, then run it.
+           (No FUSE? Run it with --appimage-extract-and-run.)
+
+PLAYING TOGETHER
+  One player picks Host online in the menu and reads out the 6-digit room code
+  (it is also copied to the clipboard). Everyone else picks Join online and types
+  the code. Everyone needs the same build.
+  Relay only hides your IP address from the other players (a little more lag).
+
+The game starts fullscreen; ESC leaves a game.

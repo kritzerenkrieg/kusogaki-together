@@ -32,7 +32,7 @@ function love.load()
         sceneEngine.switch(name)
     end)
 
-    sceneEngine.start("gameplay") -- TEMP: skip intro/menu for testing; revert to "menu"
+    sceneEngine.start("menu")
 end
 
 function love.update(delta)
