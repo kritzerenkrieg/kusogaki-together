@@ -30,7 +30,7 @@ fetch() { # file in the LÖVE release (or a full URL) -> cached path
 # ── The game (.love): tracked files only, no server, tests, docs or sources ──
 git ls-files -z | python3 -c '
 import sys, os, shutil
-skip = ("server/", "tests/", "build/", "assets/deprecated/")
+skip = ("server/", "tests/", "build/")
 for path in sys.stdin.read().split("\0"):
     if not path or path.startswith(skip) or path.endswith((".md", ".aseprite")) or path.startswith("."):
         continue
