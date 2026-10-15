@@ -4,7 +4,7 @@ Choices still to make for the online work, each with a proposed answer. Fill in 
 
 Status: **open** (not discussed yet) · **discussing** · **decided**
 
-Last updated: 2026-10-14.
+Last updated: 2026-10-15.
 
 ---
 
@@ -12,11 +12,26 @@ Last updated: 2026-10-14.
 
 Nothing open. Add new questions here as rows: | # | Decision | Proposal | Choice | Status | Goes to |
 
+
+
 ---
 
 ## Decided
 
 Most recent first. Each line: date, decision (choice number), where it is written.
+
+- 2026-10-15: **Relay only (hide my IP)** is a player option in the lobby: that player's traffic always goes through the relay, so others never see its IP. Peer to peer stays the default. (`NETWORKING.md` Connectivity)
+- 2026-10-15: A privacy policy is drafted in `PRIVACY.md` (future work: finish before the first public release with internet play). (`PRIVACY.md`)
+- 2026-10-15: **Phase 2 is closed.** Carrying players and checkpoints were tested online by hand; with the LAN run and the loss-and-delay hand test, that completes it. (F1; `DEVELOPMENT_PHASE.md`)
+- 2026-10-15: A carried player's own machine predicts itself in the carrier's hands from the carrier's last known input; host corrections glide as usual; its own inputs do nothing while carried, as in local play. (F2; `NETWORKING.md` Interactions)
+- 2026-10-15: The simulation thread (watchdog option B) comes after Phase 3, unless a play test shows hitches from replays or slow scripts. (F3; `DEVELOPMENT_PHASE.md` Roadmap)
+- 2026-10-15: Room codes are 6 digits, made when the host opens the room, gone when the host leaves. (F5; `NETWORKING.md` Connectivity)
+- 2026-10-15: IPv4 only. (F8; `NETWORKING.md` Connectivity)
+- 2026-10-15: **Keep our own rendezvous and relay** (confirms E1). Play stays peer to peer; the rendezvous only introduces the two machines (hole punching), the relay forwards only when punching fails. One small VPS in one region (Go, UDP only), more regions only if ping demands it. (F4; `NETWORKING.md` Connectivity)
+- 2026-10-15: Try direct (public and LAN addresses) for 3 s, then the relay without asking; the room shows "relayed". (F6; `NETWORKING.md` Connectivity)
+- 2026-10-15: **No encryption** of game traffic: nothing private travels; the worst case is someone on the same network path reading or tampering with one co-op game. The room code and a session token decide who may join; the relay forwards only for known tokens and caps each room's rate. Account credentials (Phase 4) go over HTTPS anyway. (F7; `NETWORKING.md` Security)
+- 2026-10-15: How a wrong game version is shown over the internet is **on hold** until the lobby and level repository exist (Phases 4–5); until then the join handshake refuses it with a reason, as on the LAN. (F9)
+- 2026-10-15: **State values are exact, not quantized; messages are LZ4-compressed instead.** A client restores the host's state and replays from it, so it must be the host's exact state. Replaces the quantization part of D1–D4. Deltas 1.3 KB → 650 B; 10 KB/s per client. (`NETWORKING.md` Budget, `DEVELOPMENT_PHASE.md`)
 
 - 2026-10-14: **Netcode is hybrid rollback (host-authoritative rollback).** Clients send their inputs to the host; the host simulates every player and the whole world and is the only source of truth. Each client predicts the world with its own inputs (others' last known inputs repeated), and when a host snapshot arrives it restores it and replays its newer inputs. Players push each other for real again (shared push, as in local play). Replaces: owner-driven player movement, puppets, `setPlayer` overrides and claims (Phase 2 steps 2 and 4), and "no client prediction/rewind". Full rollback (GGPO, inputs only, every machine authoritative) was rejected: it needs bit-exact determinism across platforms and mods, and a difference desyncs the session for good. (`NETWORKING.md`, `DEVELOPMENT_PHASE.md`)
 
@@ -35,7 +50,7 @@ Most recent first. Each line: date, decision (choice number), where it is writte
 - 2026-10-14: Our own rendezvous (hole punching) + relay; Epic Online Services, Steam networking, UPnP and VPN tools rejected. (E1; `NETWORKING.md` Connectivity)
 - 2026-10-14: Built-in `--net-lag <ms> --net-loss <%>` emulator for testing. (D6; `DEVELOPMENT_PHASE.md`)
 - 2026-10-14: Default UDP port 26967. (D5; `NETWORKING.md` Connectivity)
-- 2026-10-14: 20 Hz send rate (30 if choppy); 100 ms interpolation; positions in 1/8 px, velocities in 1/16 px per tick; the referee overrides only the clearly impossible. (D1–D4; `NETWORKING.md` Budget, Source of truth)
+- 2026-10-14: 20 Hz send rate (30 if choppy); 100 ms interpolation; ~~positions in 1/8 px, velocities in 1/16 px per tick~~ (replaced 2026-10-15: exact values, compressed); the referee overrides only the clearly impossible. (D1–D4; `NETWORKING.md` Budget, Source of truth)
 - 2026-10-14: The main menu ends the session: no in-game menu that keeps the game running; ESC leaves, and the host leaving ends it for everyone. (C4; `NETWORKING.md` Session flow)
 - 2026-10-14: A peer silent for 5 s is dropped with a message; host gone: everyone returns to the menu. (C3; `NETWORKING.md` Session flow)
 - 2026-10-14: Restart vote counts all players in the session; joining during the countdown does not cancel it. (C2; `NETWORKING.md` Session flow)

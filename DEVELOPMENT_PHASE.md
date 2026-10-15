@@ -2,7 +2,7 @@
 
 Where the online/modding work stands, what was decided, and what comes next. It's a handover note: read it first when picking the work up again. Undecided choices are tracked in `OPEN_DECISION.md`. Design details live in `NETWORKING.md` (online), `TECHNICAL.md` (engine and sandbox), `ARCHITECTURE.md` (code layout and rules) and `MODDING.md` (what level scripts can do).
 
-Last updated: 2026-10-15 (Phase 1 complete; Phase 2 hybrid rollback netcode passed the LAN and by-hand play tests; state messages compressed (v0.2.1, protocol 7)).
+Last updated: 2026-10-15 (Phases 1 and 2 complete: hybrid rollback netcode over LAN, v0.2.1, protocol 7; Phase 3 next: rendezvous + relay, 6-digit room codes).
 
 ---
 
@@ -158,11 +158,11 @@ Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carr
 
 **Play tests (2026-10-15):**
 - Headless LAN run, host on 192.168.77.102 and client on 192.168.77.103 over Wi-Fi: joined in 0.16 s, 1 full state and 674 deltas, identical world hashes at 7 checkpoints, 4 of 674 predictions corrected, 8 of 2013 inputs late, round trip 21–27 ms once settled.
-- By hand, with lag and loss: passed.
+- By hand, with lag and loss: passed. Carrying players and checkpoints online: passed by hand. **Phase 2 is complete.**
 
 **State size (game 0.2.1, protocol 7):** messages of 128 bytes or more go LZ4-compressed (`core/net/protocol.lua`, Framing). Lossless, so restore, replay and the hash are unchanged. Example level: deltas 1.3 KB → 650 B, full state 29 KB → 7.4 KB. LAN rerun: host upload 20.5 → 10.0 KB/s per client, identical hashes, 4 of 676 predictions corrected; with 120 ms lag and 10% loss at both ends 10.9 KB/s, identical hashes, 6 of 532 corrected. Quantizing was ruled out: the client must restore the host's exact state.
 
-**Next:** carrying players and checkpoints get their own online tests.
+**Next:** Phase 3 (internet play): our own rendezvous (hole punching) and relay, 6-digit room codes, IPv4, no encryption (`OPEN_DECISION.md` round F).
 
 How to test online on one PC: `love2d . --host` in one terminal, then `love2d . --join 127.0.0.1` in others (up to 4); add `--net-lag 150 --net-loss 5` to any of them for a bad connection. On a LAN, join the host's IP (UDP port 26967).
 
@@ -175,7 +175,7 @@ How to test online on one PC: `love2d . --host` in one terminal, then `love2d . 
 | 4 | Backend: accounts + level repository (upload pipeline, asset conversion, headless load test). Needs HTTPS: LÖVE 11.5 has no TLS, so ship the `lua-https` module per platform. |
 | 5 | Public lobby (room list, accounts) on top of Phase 3 |
 | 6 | Polish: host migration, reconnect, moderation |
-| after 2 | Simulation in its own thread (watchdog option B) |
+| after 3 | Simulation in its own thread (watchdog option B); earlier only if a play test shows hitches |
 | later | Process isolation for scripts (the real security boundary) |
 
 ---

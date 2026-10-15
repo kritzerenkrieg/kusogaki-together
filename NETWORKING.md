@@ -250,11 +250,13 @@ Uploads may use common media types. The server normalizes them so every client g
    3. Both sides send ENet connect attempts to each other for ~3 s.
 2. **Relay fallback:**
    - If no direct connection is made, both connect to the backend UDP relay, which forwards datagrams by session token.
-   - Relay use is shown in the room UI.
+   - Direct is tried for ~3 s (public and LAN addresses); then the relay takes over without asking. Relay use is shown in the room UI.
+   - **Relay only (hide my IP):** a player option in the lobby. That player always goes through the relay, so the others never see its IP address (with peer to peer they can). Privacy notes: `PRIVACY.md`.
    - **Decided:** our own rendezvous + relay. Rejected: Epic Online Services P2P, Steam networking, UPnP, and VPN tools (Tailscale, ZeroTier, Hamachi). Players never set up port forwarding.
-3. **Room codes (Phase 3):** a short code of digits only, read out or pasted to a friend; no accounts needed.
-4. **Port:** the game listens on UDP **26967** by default.
-5. **ENet** (bundled with LÖVE 11 as `require "enet"`) with three channels:
+3. **Room codes (Phase 3):** 6 digits, read out or pasted to a friend; made when the host opens the room, gone when the host leaves; no accounts needed.
+4. **IPv4 only.**
+5. **Port:** the game listens on UDP **26967** by default.
+6. **ENet** (bundled with LÖVE 11 as `require "enet"`) with three channels:
    - `0` unreliable, sequenced: player state updates and world snapshots.
    - `1` reliable: join/leave, votes, restart, full states.
    - `2` reliable: initial full state on join.
@@ -284,7 +286,7 @@ Network load stays as small as possible; speed beats completeness.
 ### Interactions
 There is one simulation (the host's), so every interaction resolves the same way for everyone: stomps, kicks, explosions, blocks, props, grabbing and throwing, carrying players, checkpoints and the goal are the same rules as in local play. **Players push each other for real** (shared sideways push, as in local play). A client sees the result of its own actions at once (predicted) and other players' with the delay of their inputs; when a prediction was wrong the host's state corrects it.
 
-Carrying another player online works through the same rules; it gets its own tests in the play test.
+Carrying another player online works through the same rules (tested by hand, 2026-10-15). A carried player's own machine predicts itself in the carrier's hands from the carrier's last known input; corrections glide as usual, and its own inputs do nothing while carried, as in local play.
 
 ### Client presentation
 - **Own player:** predicted, no delay.
@@ -325,7 +327,8 @@ Tracked in `OPEN_DECISION.md`.
   - only hash-verified repository levels run online;
   - per-call instruction and memory limits stop runaway scripts;
   - running scripts in a separate process with no filesystem or network access is the long-term goal.
-- **The host is trusted by its peers** (co-op), so there's no anti-cheat beyond host-side validation. Each machine owns its player's movement, so a modified game can move its own player freely; the host's referee checks reject the obviously impossible.
+- **The host is trusted by its peers** (co-op), so there's no anti-cheat beyond host-side validation. The host simulates every player from inputs, so a modified client can only send inputs; a modified host can do anything in its own room.
+- **No encryption** of game traffic (decided 2026-10-15): only inputs and game state travel. Someone on the network path could read or tamper with one co-op game; nothing private is exposed. The room code and session token decide who joins; account credentials (Phase 4) go over HTTPS.
 - **A level's custom controller script runs on every machine** (for that machine's own player), under the same sandbox and limits as on the host.
 - **Rate limits:** uploads, room creation, joins and reports are rate-limited per account and IP.
 - **Accounts:** guest device tokens at first, stored hashed. OAuth can be added later.
