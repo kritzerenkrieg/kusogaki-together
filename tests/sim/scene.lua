@@ -84,3 +84,41 @@ do
     check("the same seed gives the same random numbers", gameplay.getLevel().random:random(1, 1000000) == first)
     check("a client-side restart sends nothing", #gameplay.takeOutbox() == 0)
 end
+
+-- ── Options: changing the controls ───────────────────────────────────────
+do
+    local options = require("scenes.options")
+    local input = require("core.input")
+    local keys = options.state().keys
+    local function select(label)
+        for _ = 1, 20 do
+            options.keypressed("down")
+            if options.state().selected == 1 then break end
+        end
+        local wanted = { Left = 4, Right = 5, Jump = 6, Grab = 7, Kick = 8, ["Vote restart"] = 9, Reset = 10 }
+        for _ = 2, wanted[label] do options.keypressed("down") end
+    end
+    select("Jump")
+    options.keypressed("return")
+    check("Enter on a control waits for its key", options.state().waiting == "jump")
+    check("Options draw while waiting", pcall(options.draw))
+    options.keypressed("escape")
+    check("Esc cancels without a change", options.state().waiting == nil and keys.jump == "z")
+    options.keypressed("return")
+    options.keypressed("return")
+    check("Enter cannot be a control's key", options.state().waiting == "jump")
+    options.keypressed("space")
+    check("a new key takes effect for player 1", keys.jump == "space" and input.KEYBOARD_LAYOUTS[1].jump == "space"
+        and input.layoutForKey("space", "jump") == 1)
+    check("... and is saved", love.filesystem.read("settings.txt"):find("key_jump=space", 1, true) ~= nil)
+    check("binding a key another control has swaps them", options.bindKey("kick", "space")
+        and keys.kick == "space" and keys.jump == "c")
+    check("an unknown key is refused", not options.bindKey("left", "nosuchkey") and keys.left == "left")
+    check("a level script sees the player's key", require("core.level.ui").key("kick") == "Space")
+    options.load() -- the file has the keys from Options (bindKey alone does not save)
+    check("the keys are read back at startup", keys.jump == "space" and keys.kick == "c", keys.jump .. " " .. keys.kick)
+    select("Reset")
+    options.keypressed("return")
+    check("Reset controls brings back the defaults", keys.jump == "z" and keys.kick == "c" and keys.hold == "x"
+        and keys.left == "left" and keys.restart == "r")
+end

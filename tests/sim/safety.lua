@@ -256,7 +256,7 @@ do
     out:clear()
     watchdog.start({ timeout = 0.3, exitOnFreeze = false })
     local hash = string.rep("ab", 32)
-    local root = "online/" .. hash
+    local root = "downloads/" .. hash
 
     -- Wait `seconds`, beating every 50 ms when `beating`.
     local function wait(seconds, beating)
@@ -284,15 +284,15 @@ do
     check("the report is read only once", watchdog.readReport() == nil)
     local ok, err = pcall(Level.load, root)
     check("a blocked level is refused by the loader", not ok and tostring(err):find("blocked"), err)
-    local mounted, mountErr = levelpack.mount("anything.zip", hash)
-    check("a blocked package is refused before mounting", mounted == nil and tostring(mountErr):find("blocked"),
-        mountErr)
+    local installed, installErr = levelpack.install(hash, "anything")
+    check("a blocked level is refused before installing", installed == nil and tostring(installErr):find("blocked"),
+        installErr)
 
     watchdog.enter("levels/example")
     wait(0.9, false)
     out:pop()
     local localReport = watchdog.readReport()
-    check("a frozen bundled level is reported but not blocked", localReport and localReport.root == "levels/example"
+    check("a frozen level of the player's is reported but not blocked", localReport and localReport.root == "levels/example"
         and not localReport.blocked)
     watchdog.stop()
     love.filesystem.remove(watchdog.REPORT_FILE)

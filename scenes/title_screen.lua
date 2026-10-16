@@ -30,14 +30,15 @@ local quads = { kusogaki = {}, dodon = {} }
 -- ---- Menu ----
 local selectedOption = 1
 local options = {
-    { label = "Singleplayer" },
+    { label = "Singleplayer", levels = "mine" },
+    { label = "Online levels", levels = "online" },
     { label = "Multiplayer", scene = "lobby" },
     { label = "Options", scene = "options" },
     { label = "Exit" },
 }
 
 local MENU_X = 288            -- left edge of the option labels
-local MENU_TOP = 172          -- first option's center
+local MENU_TOP = 156          -- first option's center
 local MENU_SPACING = 24
 local MENU_SIZE = 16
 local CURSOR_GAP = 6          -- between the cursor kusogaki and its label
@@ -309,18 +310,13 @@ function titleScreen.update(delta)
     updateParade(delta)
 end
 
--- Scene for the selected option: play alone, Multiplayer (the room list),
--- options, or exit.
+-- Scene for the selected option: the levels to play alone or the level
+-- repository (scenes/levels.lua), Multiplayer (the room list), options, or exit.
 local function activate()
     local option = options[selectedOption]
-    if selectedOption == 1 then
-        local gameplay = require("scenes.gameplay")
-        if gameplay.getMode() then
-            -- Back from network play: a fresh level on this machine alone.
-            gameplay.configure({})
-            gameplay.load()
-        end
-        return "gameplay"
+    if option.levels then
+        require("scenes.levels").open(option.levels)
+        return "levels"
     elseif option.scene == "lobby" then
         require("scenes.lobby").open()
         return "lobby"

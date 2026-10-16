@@ -1,9 +1,10 @@
 -- Level loader: reads a level package and builds level data. A package is a
 -- folder (`root`) holding level.json, entities/<type>.lua (entity type scripts),
--- scripts/<script>.lua (level scripts) and assets/. Roots are either a bundled
--- level, "levels/<name>", or a downloaded package mounted by
--- core/levelpack.lua, "online/<sha256>". Scripts run in the sandbox
--- (core/script.lua) and see only their own package's assets.
+-- scripts/<script>.lua (level scripts) and assets/. Roots are a level folder
+-- in the save directory, "levels/<name>", a downloaded level,
+-- "downloads/<id>" (core/levels.lua), or one the game ships with,
+-- "builtin/<name>". Scripts run in the sandbox (core/script.lua) and see only
+-- their own package's assets.
 local json = require("core.json")
 local script = require("core.script")
 local mathx = require("core.mathx")
@@ -24,13 +25,14 @@ local function checkName(kind, value, path)
     end
 end
 
--- A package root, from a bundled level name or a root path.
+-- A package root, from a level name (levels/<name>) or a root path.
 function loader.rootFor(nameOrRoot)
     if type(nameOrRoot) == "string" and nameOrRoot:match("^[%w_]+$") then
         return "levels/" .. nameOrRoot
     end
     if type(nameOrRoot) == "string"
-        and (nameOrRoot:match("^levels/[%w_]+$") or nameOrRoot:match("^online/%x+$")) then
+        and (nameOrRoot:match("^levels/[%w_]+$") or nameOrRoot:match("^builtin/[%w_]+$")
+            or nameOrRoot:match("^downloads/%x+$")) then
         return nameOrRoot
     end
     error("invalid level root: " .. tostring(nameOrRoot), 0)
@@ -207,7 +209,7 @@ end
 function loader.load(nameOrRoot, options)
     options = options or {}
     local root = loader.rootFor(nameOrRoot)
-    local hash = root:match("^online/(%x+)$")
+    local hash = root:match("^downloads/(%x+)$")
     if hash and watchdog.isBlocked(hash) then
         error("level blocked: it froze the game before (" .. hash .. ")", 0)
     end

@@ -21,7 +21,8 @@ if command -v go >/dev/null 2>&1; then
     if (cd server && go vet ./... && go test -count=1 ./...) > /tmp/kusogaki_go_$$.log 2>&1; then
         echo "all server checks passed"
         if (cd server && go build -o /tmp/kusogaki_server_$$ ./cmd/kusogaki-server) >> /tmp/kusogaki_go_$$.log 2>&1; then
-            /tmp/kusogaki_server_$$ -addr 127.0.0.1:26988 -relay-ports 27100-27199 > /dev/null 2>&1 &
+            mkdir -p /tmp/kusogaki_levels_$$
+            /tmp/kusogaki_server_$$ -addr 127.0.0.1:26988 -relay-ports 27100-27199 -data /tmp/kusogaki_levels_$$ > /dev/null 2>&1 &
             server=$!
             export KUSOGAKI_SERVER=127.0.0.1:26988
         fi
@@ -41,7 +42,7 @@ if [ -n "$love" ]; then
 fi
 if [ -n "$server" ]; then
     kill "$server" 2>/dev/null
-    rm -f /tmp/kusogaki_server_$$
+    rm -rf /tmp/kusogaki_server_$$ /tmp/kusogaki_levels_$$
 fi
 grep -h "^FAIL" /tmp/kusogaki_test_$$.log 2>/dev/null
 rm -f /tmp/kusogaki_test_$$.log

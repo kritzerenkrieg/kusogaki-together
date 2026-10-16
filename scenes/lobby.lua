@@ -122,6 +122,13 @@ local function show(newPage)
     page, selected, notice = newPage, 1, nil
 end
 
+-- The server address set here (online.txt), "" when none; Levels uses it
+-- for the level repository.
+function lobby.serverAddress()
+    loadSettings()
+    return settings.server
+end
+
 -- Open Multiplayer at the room list.
 function lobby.open()
     loadSettings()

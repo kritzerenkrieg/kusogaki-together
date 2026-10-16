@@ -1,5 +1,7 @@
 -- The waiting room of a network session: the room's name and ID, who is in
--- it (and who lacks the chosen level), and the level. The host picks the
+-- it (and who lacks the chosen level; a client downloads it from the server,
+-- core/net/repo.lua), and the room's settings (the others see them, read
+-- only, where the host has its controls). The host picks the
 -- level, switches drop-in and public, and starts the countdown; at its end
 -- every player goes to the level (scenes/gameplay.lua runs the session and
 -- switches scenes for everyone). Leaving goes back to the menu.
@@ -35,6 +37,23 @@ end
 local function closed(status)
     return status ~= nil and (status:match("^Disconnected") or status:match("^Could not")
         or status:match("^Room:")) ~= nil
+end
+
+-- The room's settings as the others see them, above Leave.
+local function settingLines(room)
+    return {
+        "Level: " .. room.level,
+        "Drop-in: " .. onOff(room.di),
+        "Public: " .. onOff(room.pub),
+        "Connection: " .. (room.relay and "relayed" or "direct"),
+    }
+end
+
+-- How many setting lines come before the items (none for the host, whose
+-- items are the settings).
+local function linesBefore()
+    local room, isHost = current()
+    return (room and not isHost) and #settingLines(room) or 0
 end
 
 -- The items on the right: the host's controls, then Leave.
@@ -95,7 +114,7 @@ function roomScene.keypressed(key)
 end
 
 local function itemY(index)
-    return ITEM_TOP + (index - 1) * ITEM_SPACING
+    return ITEM_TOP + (index - 1 + linesBefore()) * ITEM_SPACING
 end
 
 local function itemAt(x, y)
@@ -164,8 +183,13 @@ function roomScene.draw()
         shadowed(room.name, 0, 20, w, "center", 32, TEXT_COLOR)
         shadowed(details(room), 0, 60, w, "center", 10, DIM_COLOR)
         drawPlayers(room, you)
+        shadowed(isHost and "Settings" or "Settings (the host's)", ITEM_X, ITEM_TOP - 30, 260, "left", 10,
+            ACCENT_COLOR)
         if not isHost then
-            shadowed("Level: " .. room.level, ITEM_X, ITEM_TOP - 30, 260, "left", 12, TEXT_COLOR)
+            for index, line in ipairs(settingLines(room)) do
+                shadowed(line, ITEM_X, ITEM_TOP + (index - 1) * ITEM_SPACING - ITEM_SIZE / 2 - 2, 280, "left",
+                    ITEM_SIZE, TEXT_COLOR)
+            end
         end
     else
         shadowed("WAITING ROOM", 0, 20, w, "center", 32, TEXT_COLOR)
@@ -180,10 +204,13 @@ function roomScene.draw()
         shadowed(item.label, ITEM_X, y, 280, "left", ITEM_SIZE, isSelected and TEXT_COLOR or DIM_COLOR)
     end
     local line, color = nil, DIM_COLOR
+    local levelLine, levelWarning = gameplay.levelStatus()
     if notice then
         line, color = notice, WARN_COLOR
     elseif closed(status) then
         line, color = status, WARN_COLOR
+    elseif levelLine and room and room.st ~= "countdown" then
+        line, color = levelLine, levelWarning and WARN_COLOR or ACCENT_COLOR
     elseif not room then
         line = status or "Connecting..."
     elseif room.st == "countdown" then
@@ -199,6 +226,13 @@ function roomScene.draw()
         shadowed(line, 0, h - 28, w, "center", 10, color)
     end
     love.graphics.setColor(1, 1, 1, 1)
+end
+
+-- Tests: the setting lines a player who is not the host sees (nil for the
+-- host, or before the room is known).
+function roomScene.settingLines()
+    local room, isHost = current()
+    return room and not isHost and settingLines(room) or nil
 end
 
 sceneEngine.register("room", {

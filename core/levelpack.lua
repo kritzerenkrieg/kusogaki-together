@@ -1,37 +1,69 @@
--- Downloaded level packages: zip files in the save directory, checked against
--- their sha256 and mounted read-only at online/<sha256>. The loader takes that
--- root like a bundled "levels/<name>" (see core/level/loader.lua).
--- Packages never mount under levels/: LÖVE searches the save directory before
--- the game's own files, so that would let a download replace a bundled level.
+-- Level packages: one level's files as a single string, the form levels are
+-- uploaded to and downloaded from the level repository on our server
+-- (server/repository). A package lists the level's files in byte order of
+-- their paths, each as `path \0 size \0 contents`; its id (the level's
+-- fingerprint) is the sha256 of that string, so the same files give the same
+-- id on every machine and on the server. Only the files a level may have
+-- count (FILE RULES below, the same on the server); anything else in a level
+-- folder is left out.
+-- Downloaded levels are unpacked into the save directory at
+-- downloads/<id>/ (levelpack.install); the loader takes that root like a
+-- level folder "levels/<name>" (core/level/loader.lua).
 local watchdog = require("core.watchdog")
 
 local levelpack = {}
 
-local mounted = {} -- sha256 -> save-directory path of the mounted zip
+levelpack.MAX_SIZE = 16 * 1024 * 1024 -- a whole package
+levelpack.MAX_FILES = 256
+levelpack.MAX_LUA = 200 * 1024        -- every script together
+levelpack.DOWNLOADS = "downloads"
+
+-- FILE RULES: level.json, entities/<name>.lua, scripts/<name>.lua, and
+-- assets/... images and sounds. Path parts are letters, digits, _ - and .,
+-- never start with a dot (no hidden files, no ..), at most 4 deep and 100
+-- characters long.
+local ASSET_EXTENSIONS = { png = true, jpg = true, jpeg = true, wav = true, ogg = true, mp3 = true }
+
+function levelpack.allowed(path)
+    if type(path) ~= "string" or #path > 100 or path:find("//", 1, true) then
+        return false
+    end
+    local parts = {}
+    for part in path:gmatch("[^/]+") do
+        if not part:match("^[%w_%-][%w_%-%.]*$") then
+            return false
+        end
+        parts[#parts + 1] = part
+    end
+    if #parts == 0 or #parts > 4 or path:sub(1, 1) == "/" or path:sub(-1) == "/" then
+        return false
+    end
+    if path == "level.json" then
+        return true
+    end
+    if #parts == 2 and (parts[1] == "entities" or parts[1] == "scripts") then
+        return parts[2]:match("^[%w_]+%.lua$") ~= nil
+    end
+    if parts[1] == "assets" and #parts >= 2 then
+        local extension = parts[#parts]:match("%.(%w+)$")
+        return extension ~= nil and ASSET_EXTENSIONS[extension:lower()] == true
+    end
+    return false
+end
 
 local function sha256Hex(data)
     return love.data.encode("string", "hex", love.data.hash("sha256", data))
 end
+levelpack.sha256 = sha256Hex
 
--- sha256 (lowercase hex) of a file in the save directory, or nil and an error.
-function levelpack.hashFile(path)
-    local data = love.filesystem.read(path)
-    if not data then
-        return nil, "package not found: " .. tostring(path)
-    end
-    return sha256Hex(data)
+-- Is `id` a package id (64 lowercase hex digits)?
+function levelpack.isId(id)
+    return type(id) == "string" and #id == 64 and id:match("^[0-9a-f]+$") ~= nil
 end
 
--- Fingerprint of a level package root, the same on every machine with the
--- same files: a downloaded package ("online/<sha256>") is its hash; a bundled
--- one ("levels/<name>") is the sha256 of its files (sorted paths, sizes and
--- contents). Hosts and clients compare it before playing together.
-function levelpack.fingerprint(root)
-    local online = root:match("^online/(%x+)$")
-    if online then
-        return online:lower()
-    end
-    local files = {}
+-- The package of the level folder `root`, and the paths left out of it.
+function levelpack.pack(root)
+    local files, skipped = {}, {}
     local function walk(dir, prefix)
         for _, name in ipairs(love.filesystem.getDirectoryItems(dir)) do
             local path, relative = dir .. "/" .. name, prefix .. name
@@ -39,7 +71,11 @@ function levelpack.fingerprint(root)
             if info and info.type == "directory" then
                 walk(path, relative .. "/")
             elseif info and info.type == "file" then
-                files[#files + 1] = relative
+                if levelpack.allowed(relative) then
+                    files[#files + 1] = relative
+                else
+                    skipped[#skipped + 1] = relative
+                end
             end
         end
     end
@@ -50,48 +86,118 @@ function levelpack.fingerprint(root)
         local data = love.filesystem.read(root .. "/" .. relative) or ""
         parts[#parts + 1] = relative .. "\0" .. #data .. "\0" .. data
     end
-    return sha256Hex(table.concat(parts))
+    return table.concat(parts), skipped
 end
 
--- Mount the zip at `path` (in the save directory) after checking that its
--- sha256 is `expectedHash`. Returns the package root ("online/<sha256>"), or
--- nil and an error message. A package the watchdog blocked is refused.
-function levelpack.mount(path, expectedHash)
-    if type(expectedHash) ~= "string" or not expectedHash:match("^%x+$") or #expectedHash ~= 64 then
-        return nil, "invalid package hash"
+-- Fingerprint (package id) of a level root, the same on every machine with
+-- the same files. A download's folder is named after its id (checked when it
+-- was installed).
+function levelpack.fingerprint(root)
+    local id = root:match("^" .. levelpack.DOWNLOADS .. "/(%x+)$")
+    if id then
+        return id:lower()
     end
-    expectedHash = expectedHash:lower()
-    if watchdog.isBlocked(expectedHash) then
+    return sha256Hex((levelpack.pack(root)))
+end
+
+-- The files in a package: a list of { path, data } in package order, or nil
+-- and what is wrong with it. Checks every rule the server checks.
+function levelpack.unpack(package)
+    if type(package) ~= "string" or #package > levelpack.MAX_SIZE then
+        return nil, "the package is too big"
+    end
+    local files, at, lua, last = {}, 1, 0, nil
+    while at <= #package do
+        local pathEnd = package:find("\0", at, true)
+        local sizeEnd = pathEnd and package:find("\0", pathEnd + 1, true)
+        if not sizeEnd then
+            return nil, "the package is cut short"
+        end
+        local path, size = package:sub(at, pathEnd - 1), package:sub(pathEnd + 1, sizeEnd - 1)
+        if not levelpack.allowed(path) then
+            return nil, "a level may not have the file " .. path
+        end
+        if last and path <= last then
+            return nil, "the package's files are out of order"
+        end
+        if not size:match("^%d+$") or #size > 9 or size ~= tostring(tonumber(size))
+            or sizeEnd + tonumber(size) > #package then
+            return nil, "the package is cut short"
+        end
+        local data = package:sub(sizeEnd + 1, sizeEnd + tonumber(size))
+        if path:match("%.lua$") then
+            if data:sub(1, 1) == "\27" then
+                return nil, "compiled Lua is not allowed: " .. path
+            end
+            lua = lua + #data
+        end
+        files[#files + 1] = { path = path, data = data }
+        if #files > levelpack.MAX_FILES then
+            return nil, "a level has at most " .. levelpack.MAX_FILES .. " files"
+        end
+        last, at = path, sizeEnd + tonumber(size) + 1
+    end
+    if lua > levelpack.MAX_LUA then
+        return nil, "the scripts are too big"
+    end
+    for _, file in ipairs(files) do
+        if file.path == "level.json" then
+            return files
+        end
+    end
+    return nil, "the package has no level.json"
+end
+
+-- Delete a file or a folder with everything in it (in the save directory).
+function levelpack.removeTree(path)
+    local info = love.filesystem.getInfo(path)
+    if info and info.type == "directory" then
+        for _, name in ipairs(love.filesystem.getDirectoryItems(path)) do
+            levelpack.removeTree(path .. "/" .. name)
+        end
+    end
+    love.filesystem.remove(path)
+end
+
+-- Unpack a downloaded package into downloads/<id>/ after checking that it
+-- is the package `id`. Returns the level's root, or nil and an error. A
+-- level the watchdog blocked is refused. level.json is written last: a
+-- download cut short has none and is not a level.
+function levelpack.install(id, package)
+    if not levelpack.isId(id) then
+        return nil, "invalid level id"
+    end
+    if watchdog.isBlocked(id) then
         return nil, "level blocked: it froze the game before"
     end
-    local root = "online/" .. expectedHash
-    if mounted[expectedHash] then
-        return root
+    if type(package) ~= "string" or sha256Hex(package) ~= id then
+        return nil, "the download does not match the level's id"
     end
-    local actual, err = levelpack.hashFile(path)
-    if not actual then
+    local files, err = levelpack.unpack(package)
+    if not files then
         return nil, err
     end
-    if actual ~= expectedHash then
-        return nil, ("package hash mismatch: expected %s, got %s"):format(expectedHash, actual)
+    local root = levelpack.DOWNLOADS .. "/" .. id
+    levelpack.removeTree(root)
+    local levelJson
+    for _, file in ipairs(files) do
+        if file.path == "level.json" then
+            levelJson = file
+        else
+            local folder = (root .. "/" .. file.path):match("^(.*)/[^/]+$")
+            love.filesystem.createDirectory(folder)
+            if not love.filesystem.write(root .. "/" .. file.path, file.data) then
+                levelpack.removeTree(root)
+                return nil, "could not save " .. file.path
+            end
+        end
     end
-    if not love.filesystem.mount(path, root, false) then
-        return nil, "could not mount package: " .. path
+    love.filesystem.createDirectory(root)
+    if not love.filesystem.write(root .. "/level.json", levelJson.data) then
+        levelpack.removeTree(root)
+        return nil, "could not save level.json"
     end
-    if not love.filesystem.getInfo(root .. "/level.json", "file") then
-        love.filesystem.unmount(path)
-        return nil, "package has no level.json at its top level"
-    end
-    mounted[expectedHash] = path
     return root
-end
-
-function levelpack.unmount(expectedHash)
-    local path = mounted[expectedHash]
-    if path then
-        love.filesystem.unmount(path)
-        mounted[expectedHash] = nil
-    end
 end
 
 return levelpack

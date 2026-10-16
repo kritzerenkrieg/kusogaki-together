@@ -4,9 +4,9 @@
 -- (core/watchdog_thread.lua) expects a heartbeat every frame while a level
 -- runs; after TIMEOUT seconds without one it writes a report naming the level
 -- and ends the process. On the next launch, watchdog.start reads the report:
--- a downloaded level (online/<sha256>) is added to the block list and refused
--- from then on (levelpack.mount, loader), and the player is told why the game
--- closed. Bundled and local levels are reported but never blocked.
+-- a downloaded level (downloads/<id>) is added to the block list and refused
+-- from then on (levelpack.install, loader), and the player is told why the
+-- game closed. The player's own levels are reported but never blocked.
 -- See TECHNICAL.md (Sandbox: watchdog).
 local json = require("core.json")
 
@@ -22,7 +22,7 @@ local blocked -- sha256 -> true, loaded on first use
 watchdog.lastReport = nil -- { root, seconds, blocked } from the previous run, if it froze
 
 local function hashOf(root)
-    return type(root) == "string" and root:match("^online/(%x+)$")
+    return type(root) == "string" and root:match("^downloads/(%x+)$")
 end
 
 local function loadBlocked()

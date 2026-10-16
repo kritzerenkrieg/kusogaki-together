@@ -13,6 +13,17 @@ function ui.size()
     return render.width, render.height
 end
 
+-- The key the player has for `action` ("left", "right", "jump", "hold",
+-- "kick", "restart"), as shown: "Z", "Left". Players can change them in
+-- Options, so tutorials ask here instead of naming keys.
+function ui.key(action)
+    local key = type(action) == "string" and require("core.player.config").KEYS[action]
+    if type(key) ~= "string" then
+        return "?"
+    end
+    return #key == 1 and key:upper() or (key:sub(1, 1):upper() .. key:sub(2))
+end
+
 -- The world rectangle in view: x, y, w, h (world px).
 function ui.view()
     return camera.view()

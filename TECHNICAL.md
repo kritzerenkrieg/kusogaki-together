@@ -66,7 +66,7 @@ Level Package
 
 Levels are portable and versioned. Level data is declarative and never executes; Lua scripts run only inside the sandbox.
 
-Implemented: `core/level/loader.lua` loads a package from its root: a bundled `levels/<name>` or a downloaded package mounted at `online/<sha256>` by `core/levelpack.lua` (zip in the save directory, sha256-checked before mounting). It reads `level.json` (format 1: `spawn`, `background`, `static`, `entities`, optional `scripts`), validates names, and builds level data. Each type runs once per load from `<root>/entities/<type>.lua`, and each listed level script from `<root>/scripts/<script>.lua`, via `core/script.lua`. Scripts name assets relative to the package (`assets/box.png`).
+Implemented: `core/level/loader.lua` loads a package from its root: a level folder in the save directory, `levels/<name>`, a downloaded level, `downloads/<id>` (unpacked by `core/levelpack.lua` after its sha256 matched the id), or a built-in one, `builtin/<name>` (copied to `levels/` at startup). Where levels live and how they travel: `NETWORKING.md` (Level repository). It reads `level.json` (format 1: `spawn`, `background`, `static`, `entities`, optional `scripts`), validates names, and builds level data. Each type runs once per load from `<root>/entities/<type>.lua`, and each listed level script from `<root>/scripts/<script>.lua`, via `core/script.lua`. Scripts name assets relative to the package (`assets/box.png`).
 
 Code layout, the running level, gameplay rules and physics rules are in `ARCHITECTURE.md`.
 

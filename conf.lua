@@ -7,7 +7,9 @@ for _, value in ipairs(arg or {}) do
 end
 
 function love.conf(settings)
-    settings.identity = "kusogaki-together"
+    -- The save directory: levels, downloads and settings. Tests keep their
+    -- own, so they never touch a player's levels.
+    settings.identity = SIM_TEST and "kusogaki-together-test" or "kusogaki-together"
     settings.window.title = "Kusogaki Together"
     settings.window.width = 640
     settings.window.height = 360

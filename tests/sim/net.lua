@@ -70,9 +70,10 @@ end
 -- ── Level fingerprints ───────────────────────────────────────────────────
 do
     local a, b = levelpack.fingerprint("levels/example"), levelpack.fingerprint("levels/example")
-    check("a bundled level's fingerprint is stable", a == b and #a == 64)
+    check("a level's fingerprint is stable", a == b and #a == 64)
+    check("... and the same as the built-in level it was copied from", a == levelpack.fingerprint("builtin/example"))
     check("different levels differ", a ~= levelpack.fingerprint("levels/topdown"))
-    check("an online package's fingerprint is its hash", levelpack.fingerprint("online/" .. ("ab"):rep(32))
+    check("a download's fingerprint is its id", levelpack.fingerprint("downloads/" .. ("ab"):rep(32))
         == ("ab"):rep(32))
 end
 
@@ -436,7 +437,7 @@ do
             welcome = function(message) got.welcome = message end,
             room = function(message)
                 got.room, got.rooms = message, got.rooms + 1
-                got.client:has(claim and claim(message) or levelpack.fingerprint("levels/" .. message.level))
+                got.client:has(claim and claim(message) or message.fp)
             end,
             start = function(message) got.start = message end,
             toroom = function(message) got.toroom = message end,
@@ -458,7 +459,7 @@ do
     end
 
     local missing = false
-    local ann = newClient("Ann", function(message) return missing and "" or levelpack.fingerprint("levels/" .. message.level) end)
+    local ann = newClient("Ann", function(message) return missing and "" or message.fp end)
     clients[1] = ann
     run(300, function() return ann.room and #ann.room.players == 2 and ann.room.players[2].has end)
     local roomScene = require("scenes.room")

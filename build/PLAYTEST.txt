@@ -20,4 +20,20 @@ PLAYING TOGETHER
   Relay only (when creating a room) hides everyone's IP address from the others
   (a little more lag).
 
+LEVELS
+  Singleplayer lists your levels. They are folders in the game's save folder
+  (Singleplayer -> Open my levels folder):
+    Windows: %APPDATA%\kusogaki-together\levels
+    macOS:   ~/Library/Application Support/kusogaki-together/levels
+    Linux:   ~/.local/share/kusogaki-together/levels
+  Copy a level folder in there to play it. U uploads the selected level to
+  the server; Tab (or Online levels in the menu) shows the levels on the
+  server, Enter downloads one.
+  In a room, players who do not have the host's level download it from the
+  server by themselves (the host's level must be on the server for that).
+
+CONTROLS
+  Arrows move, Z jumps, X grabs, C kicks, R votes to restart. Change them in
+  Options (Enter on a control, then press the new key).
+
 The game starts fullscreen; ESC leaves a game.

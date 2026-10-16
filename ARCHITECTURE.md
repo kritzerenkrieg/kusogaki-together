@@ -15,6 +15,7 @@ scenes/
   title_screen.lua    intro splash and the main menu (Cave Story style, with a running background parade)
   lobby.lua           Multiplayer: the public room list, Create room, Join by room ID, server address
   room.lua            the waiting room: players, level choice, drop-in, public, the start countdown
+  levels.lua          Singleplayer: my levels (play, upload, delete downloads) and the online level list
   options.lua         Options: name, music and sound effect volume (saved in settings.txt)
 core/
   level/              a running level; require("core.level") is init.lua
@@ -64,6 +65,8 @@ core/
     inputsync.lua       inputs to the host: client input history, host input buffers
     statesync.lua       the host's state to clients: per-field deltas, acknowledgements, hash
     rendezvous.lua      internet rooms on our server: codes, probes, punching, relay fallback
+    repo.lua            the level repository on our server: list, info, download, upload (HTTP)
+    http_thread.lua     one HTTP request in its own thread (luasocket blocks)
   version.lua         game and protocol versions (must match to play together)
   fixedstep.lua       fixed-timestep clock (60 Hz ticks)
   script.lua          the script sandbox: environment, read-only engine views, limits
@@ -71,12 +74,14 @@ core/
   watchdog_thread.lua the watchdog's thread (heartbeat timeout, report, exit)
   json.lua            JSON decode/encode
   wire.lua            binary encoding for network messages (love.data.pack)
-  levelpack.lua       level packages: fingerprints, sha256 check, mount at online/<sha256>
+  levelpack.lua       level packages: pack, ids (fingerprints), file rules, install downloads
+  levels.lua          the levels on this machine (levels/, downloads/); copies builtin/ in
   scenes.lua          scene registry and switching
   input.lua           input sources (keyboard layouts, gamepads) → input frames; custom actions
   mathx.lua           math helpers, easing, seeded random (mathx.newRandom)
   audio.lua, text.lua
-levels/<name>/        example: the platformer level; topdown: a top-down coin race (MODDING.md)
+builtin/<name>/       the levels the game ships with, copied to the save directory's levels/
+                      example: the platformer level; topdown: a top-down coin race (MODDING.md)
   level.json          layout, placements, background, gravity, camera, actions
   entities/<type>.lua entity type scripts (sandboxed)
   scripts/<name>.lua  level scripts (sandboxed), listed in level.json "scripts"
@@ -93,17 +98,19 @@ tests/
   sim/features.lua      input actions, stages, spawning, gravity, finish, camera, levels/topdown
   sim/scene.lua         the gameplay scene
   sim/net.lua           messages, fingerprints, host and clients over localhost
-  sim/online.lua        rooms, joining by code, direct, relay and fallback (needs the server)
+  sim/online.lua        rooms, joining by code, direct, relay and fallback, a room's level
+                        downloaded (needs the server)
+  sim/levels.lua        built-in levels copied in, packages, the level list and screen, the repository
   run.sh              every suite under every interpreter, plus the server's Go tests;
                       starts the server for sim/online.lua (sh tests/run.sh)
 server/               the public server, separate Go module (server/README.md, DEPLOYMENT.md)
   cmd/kusogaki-server/  the binary: flags, the UDP loop
   lobby/              rooms, codes, the control channel, probes, introductions
   relay/              relay port pairs (token-checked ends, rate caps), reading ENet connect packets
-  repository/         accounts and levels (Phase 4, design only)
+  repository/         the level repository: packages, storage, the HTTP API
 ```
 
-Base behavior lives in `core/`; concrete types live in `levels/`.
+Base behavior lives in `core/`; concrete types live in the levels (`builtin/` in the game, `levels/` and `downloads/` in the save directory).
 
 ### Where code goes
 
@@ -281,5 +288,5 @@ Entity events also carry `entity`, the object itself, for local presentation (im
 - **Network play:** `love2d . --host` opens a session (UDP port 26967); `love2d . --join <ip[:port]>` joins one. Player ids are stable for the session (`level:addPlayer(player, id)`), so a remote player keeps its id across restarts; remote players are in `level.players` but not in the slots; clients send their inputs every tick and the host sends its whole state 20 times a second (hybrid rollback, `core/net/inputsync.lua`, `core/net/statesync.lua`). A client waits for the host's welcome and first state before it plays. ESC to the main menu ends the session. Internet play (Phase 3): Multiplayer in the title menu lists the public rooms and creates them (`scenes/lobby.lua`); a session starts in the waiting room (`scenes/room.lua`), where the host picks the level and starts it. `--host --online` opens a room on our rendezvous server (`server/`, Go) that plays at once and `--code <6 digits>` joins one; play stays peer to peer, through the server's relay only when punching fails or the host chose Relay only (`--relay-only`). Design and status: `NETWORKING.md`, `DEVELOPMENT_PHASE.md`.
 - **Restart seed:** this machine is the host and the source of truth (`NETWORKING.md`, Source of truth). It picks each (re)start's seed, queues a `restart{seed}` session message (`gameplay.takeOutbox`) and restarts through `gameplay.restart(seed)`, the same call a client makes on that message; it refuses anything but a whole number in 1..2147483646. The level keeps its seed as `level.seed`.
 - **Respawn count:** `player.respawns` counts respawns (`core/player/state.lua`). A restart carries each slot's count to its new player; winning (`level:finish("win")`) resets every count (`gameplay.resetRespawns`).
-- `love2d . --level <name>` plays another bundled level (default `example`).
+- `love2d . --level <name>` plays `levels/<name>` from the save directory (default `example`).
 

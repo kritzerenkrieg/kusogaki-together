@@ -4,7 +4,7 @@ How to make a level: the package, `level.json`, entity type scripts and level sc
 
 Engine internals are in `ARCHITECTURE.md`; the sandbox rules in `TECHNICAL.md` (Sandbox); online play in `NETWORKING.md`.
 
-Try a level with `love2d . --level <name>` (default `example`).
+**Where levels go:** the save directory's `levels/` folder (Singleplayer → Open my levels folder; the paths are in `NETWORKING.md`, Level repository). Each level is a folder there. Singleplayer lists them; U uploads one to the server so others can download it and play it in rooms. The game's own levels are copied there at startup; edit a copy and the game leaves it alone. From source: `love2d . --level <name>` plays `levels/<name>` (default `example`).
 
 ---
 
@@ -20,6 +20,8 @@ levels/<name>/
 
 Every path a script names is relative to the package (`"assets/box.png"`). A path the package does not have may name the engine's shared art (`"assets/graphics/..."`). Nothing else can be read.
 
+Only these files are part of a level: `level.json`, `entities/<name>.lua`, `scripts/<name>.lua`, and images and sounds under `assets/` (at most 4 folders deep). Other files (notes, source art) may sit in the folder but are not uploaded and do not change the level's id. Limits: 256 files, 16 MB, 200 KB of Lua.
+
 ---
 
 ## level.json
@@ -27,7 +29,7 @@ Every path a script names is relative to the package (`"assets/box.png"`). A pat
 | Field | Meaning |
 |---|---|
 | `format` | `1` |
-| `name` | display name |
+| `name` | the level's name in lists and rooms: letters, digits and `_`, at most 32 (required to upload) |
 | `size` | `{ "w", "h" }`: world size in px (default: one screen, 640×360). Falling 32 px below `h` is falling out. |
 | `spawn` | `{ "x", "y" }`: where players start (required) |
 | `gravity` | px/s² pulling bodies down (default 900); `0` for top-down games, negative pulls up |
@@ -230,6 +232,7 @@ Draw hooks get `ui`. There is no `love`.
 | `ui.text(text, x, y, size)`, `ui.textWidth(text, size)` | text |
 | `ui.size()` | screen width, height |
 | `ui.view()` | the world rectangle in view: x, y, w, h |
+| `ui.key(action)` | the player's key for `left`, `right`, `jump`, `hold`, `kick` or `restart`, as shown (`"Z"`); players can change them in Options |
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Status: future work.** A draft to finish before the first public release with internet play (Phase 3) and to extend when accounts arrive (Phase 4). Not yet in force; the contact, operator name and hosting details are still to fill in.
 
-Last updated: 2026-10-15.
+Last updated: 2026-10-16.
 
 ---
 
@@ -25,8 +25,11 @@ The server's public room list shows what a host chose to show: the room's name, 
 - Game traffic is inputs and game state only: no chat, voice or personal data.
 - Game traffic is not encrypted (it carries nothing private). Account sign-in (Phase 4) always goes over HTTPS.
 
-### Accounts and levels (Phase 4, not built yet)
-To be written when built. Planned: a display name, a device token stored only as a hash, the levels you upload, and reports you make or receive for moderation.
+### Levels you upload
+When you upload a level, the server stores the level's files, your player name (from Options) and the time, and shows them to everyone in the online level list. Your IP address is used only to limit how many levels one address can upload an hour; it is kept in memory for about an hour and never written to a log or with the level. Downloading a level stores nothing about you. Uploads go over plain HTTP for now: do not put anything private in a level or your name.
+
+### Accounts (Phase 4, not built yet)
+To be written when built. Planned: a display name, a device token stored only as a hash, and reports you make or receive for moderation.
 
 ---
 

@@ -135,9 +135,9 @@ These must land before any networking code. Each is useful on its own, and toget
 - **`netstate.pack`/`unpack`** turn a snapshot into lists in schema order, so field names are not sent: the example level's full snapshot (70 entities, 2 players) is 2.2 KB packed vs 8.8 KB generic. Delta snapshots and quantized positions (Phase 2) will cut this further. Events still use the generic form (they are few).
 
 ### Package loading (done)
-- `core/level/loader.lua` loads from a package root: `levels/<name>` (bundled) or `online/<sha256>` (downloaded). Every path in a package, including tiles, scripts and assets, is relative to the root.
-- `core/levelpack.lua` checks a downloaded zip's sha256, then mounts it read-only at `online/<sha256>` with `love.filesystem.mount`. Downloads never use the `levels/` prefix, so they cannot shadow bundled levels (LÖVE searches the save directory first).
-- `tests/sim_test.lua` zips the example level, mounts it, checks that a wrong hash is refused, and checks that the packaged level plays exactly like the bundled one.
+- `core/level/loader.lua` loads from a package root: `levels/<name>` (the player's own, in the save directory), `downloads/<id>` (downloaded) or `builtin/<name>` (inside the game). Every path in a package, including tiles, scripts and assets, is relative to the root.
+- Levels live outside the game, in the save directory (Level repository, Client side). The game only carries `builtin/`, which it copies into `levels/` at startup.
+- `tests/sim/levels.lua` and `tests/sim/data.lua` pack the example level, install it as a download, refuse a wrong id, and check that it plays exactly like the original.
 
 **Phase 0 is complete.** Run every suite with `sh tests/run.sh`.
 
@@ -145,21 +145,26 @@ These must land before any networking code. Each is useful on its own, and toget
 
 ## Level repository
 
+Built (game 0.4.0): upload, browse and download over plain HTTP, no accounts yet. The rest of Phase 4 (accounts, HTTPS, asset conversion, the headless load test) is still design: `server/repository/README.md`.
+
 ### Package
+A level folder's files as one string (`core/levelpack.lua`, `server/repository/package.go`): the files in byte order of their paths, each as `path \0 size \0 contents`. Its sha256 is the level's **id**, and also its fingerprint: the same files give the same id on every machine and on the server.
+
 ```text
-<level>.zip
-├── level.json        format, spawn, size, background, static, entities, scripts
-├── meta.json         name, author, format version, engine version, description, tags
-├── entities/*.lua
-├── scripts/*.lua
-└── assets/           images, sounds, music
+level.json            format 1, name (letters, digits, _; at most 32), spawn, ...
+entities/<name>.lua
+scripts/<name>.lua
+assets/...            .png .jpg .jpeg .wav .ogg .mp3, at most 4 folders deep
 ```
 
-Server side (asset formats and limits, the upload pipeline, data, API, moderation): `server/repository/README.md`. Phase 4, design only.
+Nothing else counts: other files in a level folder are left out of the package. Path parts never start with a dot; at most 256 files, 16 MB, 200 KB of Lua, no compiled Lua. The server also checks that images and sounds are what their extension says.
 
 ### Client side
-- Downloads go to the save directory (`online/<sha256>.zip`). The client verifies them with `love.data.hash("sha256", …)` before mounting.
-- Only levels with a verified hash from the repository are playable online.
+- **Where levels are:** the save directory (`%APPDATA%\kusogaki-together` on Windows, `~/Library/Application Support/kusogaki-together` on macOS, `~/.local/share/kusogaki-together` on Linux; `love2d .` from source uses LÖVE's `love/kusogaki-together`). `levels/<name>/` holds the player's own levels, `downloads/<id>/` the downloaded ones (`core/levels.lua`).
+- **Built-in levels** (`builtin/` in the game) are copied into `levels/` at startup: a missing one is copied, and one the player has not changed is replaced when the game ships a newer version (`seeded_levels.json` remembers what was copied).
+- **Levels screen** (Singleplayer, `scenes/levels.lua`): My levels plays one alone, uploads one (U) and deletes a download; Online lists the repository and downloads.
+- **Downloads** are checked against their id (sha256) and the package rules before anything is written, then unpacked into `downloads/<id>/` with `level.json` written last, so a download cut short is not a level. A level the watchdog blocked is not installed again.
+- **In a room** a level is named by its id. A client without it downloads it from the server and only then answers `has`. A host whose level is not on the server is told that players without it cannot get it.
 
 ---
 
@@ -237,9 +242,9 @@ Tracked in `OPEN_DECISION.md`.
 - **Hosting and joining:** Multiplayer in the menu lists the public rooms; Create room opens one (name, public or private, drop-in, relay only) and Join by room ID joins a private one. Testing shortcuts: `love2d . --host` opens a session that plays at once (no waiting room, drop-in on); `love2d . --join <ip>` joins one.
 - **The waiting room (built, `scenes/room.lua`, `scenes/gameplay.lua`):** a session starts there. The host sends the room to everyone on each change (`room{name, code, level, fp, st, cd, di, pub, relay, players}`, players with their names and whether they have the level) and the same summary to the server with its polls. Each client answers with its copy of the room's level (`has{fp}`, "" without it). The host picks the level and can start once everyone has it: a 3 s countdown (cancelled if someone without the level arrives), then `start{level, fp, seed, generation, players}` to every player and everyone builds the level. When the level is over the host takes everyone back (`toroom{generation}`).
 - **Drop-in:** a room setting, on by default. With it, a player who joins while a level is played joins it (below, Late join) once its `has` matches; one without the level is let go with a reason. Without it, the host and the server refuse joins until the room is back in waiting.
-- **Levels (Phase 2):** bundled levels only. On connect the host checks the level's sha256 and the game version, and refuses a mismatch with a message.
+- **Levels:** the room's level is named by its id (`room.fp`; `room.level` is only its name). A client looks for a level with that id among its own and downloaded ones, and in an internet room downloads it from the server when it has none (Level repository, Client side). The game version is checked on connect.
 - **Join (built, `core/net/session.lua`):** `hello{protocol, game, name}` → the host answers `welcome{you}` (a refused version, a full room or a started game without drop-in gets `reject{reason}`). The client is then in the room. Joining a level being played: the host sends that client `start` with the level's seed and tells the players in it `joined{id}`; the next state to it is a full one (reliable, after the start), and it starts predicting from it. A client must finish the handshake within 5 s.
-- **Fingerprint:** a bundled level's is the sha256 of its files (sorted paths, sizes, contents; `levelpack.fingerprint`), a downloaded one's is its package hash.
+- **Fingerprint:** a level's id: the sha256 of its package (`levelpack.fingerprint`). A download's folder is named after it.
 - **Player ids** stay stable for the session: a remote player keeps its id across restarts; a free id is reused only after its player left.
 - **Late join:** allowed. The new player spawns at the host's latest checkpoint (the host player's current spawn point); its machine learns where from the host's state.
 - **Inputs and state (built):** see Netcode (Client → host, Host → clients).
@@ -263,7 +268,7 @@ Tracked in `OPEN_DECISION.md`.
 
 - **Uploaded Lua runs on every host.** The sandbox is a guardrail, not a security boundary (`TECHNICAL.md`). So:
   - server-side checks plus the load test reject obvious abuse;
-  - only hash-verified repository levels run online;
+  - a client only plays what is byte for byte the host's level (by id), and only ever downloads levels from the repository, checked against their id;
   - per-call instruction and memory limits stop runaway scripts;
   - running scripts in a separate process with no filesystem or network access is the long-term goal.
 - **The host is trusted by its peers** (co-op), so there's no anti-cheat beyond host-side validation. The host simulates every player from inputs, so a modified client can only send inputs; a modified host can do anything in its own room.
@@ -281,6 +286,6 @@ Tracked in `OPEN_DECISION.md`.
 | 1 (done) | Local co-op, 2–5 players (couch co-op now deprecated: one player per machine) | Every level rule works with N players: stomps, carrying, throwing at each other, per-player checkpoints, blasts |
 | 2 | LAN netcode, direct IP: hybrid rollback (inputs to the host, host states, client prediction). Tested on one PC and a LAN (no port forwarding needed there). | 5 instances on one PC or a LAN play cleanly; still playable at 150 ms and 5% loss (emulated); no lasting desync or broken session |
 | 3 | Plug-and-play internet play: UDP rendezvous (NAT hole punching) + relay fallback, a public room list and a waiting room, private rooms joined by a short room ID. No accounts. | Two players on different home networks connect with a room code, with no router setup; relay fallback works when punching fails |
-| 4 | Backend: accounts + level repository | Upload → validate/normalize → browse → download → play an uploaded level, including gif/webp/mp3 assets |
+| 4 | Backend: accounts + level repository (upload, browse, download over HTTP built in 0.4.0) | Upload → validate/normalize → browse → download → play an uploaded level, including gif/webp/mp3 assets |
 | 5 | Public lobby (room list, accounts) on top of Phase 3's connectivity | Two strangers find each other in the public list and play |
 | 6 | Polish | Host migration, reconnect, moderation tools |

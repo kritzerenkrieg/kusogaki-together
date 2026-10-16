@@ -6,7 +6,16 @@
 -- The checks live in tests/sim/, one file per topic.
 local helpers = require("tests.sim.helpers") -- first: installs the stubs
 
-for _, part in ipairs({ "determinism", "players", "data", "safety", "features", "scene", "net", "rollback", "online" }) do
+-- The levels as on a fresh install: the built-in ones copied into the
+-- test save directory (conf.lua gives tests their own).
+local levelpack = require("core.levelpack")
+for _, path in ipairs({ "levels", "downloads", "seeded_levels.json" }) do
+    levelpack.removeTree(path)
+end
+require("core.levels").seed()
+
+for _, part in ipairs({ "levels", "determinism", "players", "data", "safety", "features", "scene", "net", "rollback",
+    "online" }) do
     require("tests.sim." .. part)
 end
 

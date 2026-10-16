@@ -54,6 +54,8 @@ local render = require("core.graphics.render")
 local text = require("core.text")
 local loader = require("core.level.loader")
 local levelpack = require("core.levelpack")
+local levels = require("core.levels")
+local repo = require("core.net.repo")
 local session = require("core.net.session")
 local inputsync = require("core.net.inputsync")
 local statesync = require("core.net.statesync")
@@ -66,8 +68,8 @@ local protocol = require("core.net.protocol")
 local gameplay = {}
 
 -- Command line (testing shortcuts; players use Multiplayer in the menu):
--- `--level <name>` picks the level (default "example"; a client
--- plays the host's); `--host` / `--join <ip[:port]>` start network play
+-- `--level <name>` picks the level (levels/<name> in the save directory,
+-- default "example"; a client plays the host's); `--host` / `--join <ip[:port]>` start network play
 -- directly over a LAN or 127.0.0.1, without the server;
 -- `--net-lag <ms> --net-loss <percent>` make this machine's connection worse
 -- for testing (core/net/session.lua); `--local-coop` turns on the deprecated
@@ -75,7 +77,7 @@ local gameplay = {}
 -- `--host --online` opens a room on our server and shows its code;
 -- `--code <6 digits>` joins one; `--server <host[:port]>` names the server;
 -- `--relay-only` (host) relays every client of the room.
-local LEVEL_NAME = "example"
+local LEVEL_ROOT = "levels/example" -- the level played (or the room's level)
 local LOCAL_COOP = false
 local NET_MODE, JOIN_ADDRESS = nil, nil -- "host" | "client" | nil
 local NET_LAG, NET_LOSS = 0, 0          -- simulated extra round trip (s) and loss (fraction)
@@ -83,7 +85,8 @@ local ONLINE = nil                      -- { server, code, relayOnly } for inter
 local onlineOptions = { server = nil, relayOnly = false }
 for i, value in ipairs(arg or {}) do
     if value == "--level" and arg[i + 1] then
-        LEVEL_NAME = arg[i + 1]
+        local ok, root = pcall(loader.rootFor, arg[i + 1])
+        LEVEL_ROOT = ok and root or LEVEL_ROOT
     elseif value == "--local-coop" then
         LOCAL_COOP = true
     elseif value == "--host" then
@@ -150,16 +153,23 @@ local roomState = "waiting" -- host: "waiting" | "countdown" | "playing"
 local roomCountdown = nil   -- host: seconds left, while counting down
 local roomDirty = true      -- host: the room changed since it was last sent
 local sentHas = nil         -- client: the "has" fingerprint last sent (for the room's level)
-local fingerprints = {}     -- level name -> its fingerprint ("" when missing), per session
+local fingerprints = {}     -- level root -> its fingerprint ("" when missing), per session
+local download = nil        -- client: { id, request, err } getting the room's level from the server
+local onServer = nil        -- host: { id, request, result } whether the room's level is on the server
 
--- The fingerprint of this machine's copy of level `name`, or "" without one.
-local function fingerprintOf(name)
-    if fingerprints[name] == nil then
-        local root = "levels/" .. name
-        fingerprints[name] = love.filesystem.getInfo(root .. "/level.json", "file")
+-- The fingerprint (package id) of the level at `root`, or "" without one.
+local function fingerprintOf(root)
+    if fingerprints[root] == nil then
+        fingerprints[root] = love.filesystem.getInfo(root .. "/level.json", "file")
             and levelpack.fingerprint(root) or ""
     end
-    return fingerprints[name]
+    return fingerprints[root]
+end
+
+-- A level's name for the room and the room list.
+local function levelTitle(root)
+    local entry = levels.byRoot(root)
+    return entry and entry.name or (root:match("[^/]+$") or "level"):sub(1, 32)
 end
 
 -- Switch to `name` unless it is already the scene (the room and the level
@@ -249,7 +259,7 @@ end
 local function buildLevel(seed)
     -- The watchdog blames a freeze from here on (even while scripts load) on
     -- this level.
-    local root = loader.rootFor(LEVEL_NAME)
+    local root = loader.rootFor(LEVEL_ROOT)
     watchdog.enter(root)
     level = Level.load(root, { seed = seed })
     fx.clearEffects(level)
@@ -438,16 +448,9 @@ end
 
 -- ── The room (host) ───────────────────────────────────────────────────────
 
--- The levels this machine has (folders in levels/ with a level.json), sorted.
+-- The levels this machine has (core/levels.lua): its own and downloaded ones.
 function gameplay.levels()
-    local list = {}
-    for _, name in ipairs(love.filesystem.getDirectoryItems("levels")) do
-        if name:match("^[%w_]+$") and love.filesystem.getInfo("levels/" .. name .. "/level.json", "file") then
-            list[#list + 1] = name
-        end
-    end
-    table.sort(list)
-    return list
+    return levels.list()
 end
 
 -- The room as every player sees it (protocol `room`).
@@ -458,13 +461,13 @@ local function roomMessage()
         ids[#ids + 1] = id
     end
     table.sort(ids)
-    local fp = fingerprintOf(LEVEL_NAME)
+    local fp = fingerprintOf(LEVEL_ROOT)
     for _, id in ipairs(ids) do
         players[#players + 1] = { id = id, name = members[id].name, has = members[id].has == fp }
     end
     local code = net and net.room and net:room() or nil
     return {
-        t = "room", name = roomSettings.name, code = code or "", level = LEVEL_NAME, fp = fp,
+        t = "room", name = roomSettings.name, code = code or "", level = levelTitle(LEVEL_ROOT), fp = fp,
         st = roomState, cd = roomCountdown and math.ceil(roomCountdown) or 0,
         di = roomSettings.dropIn, pub = roomSettings.public, relay = ONLINE and ONLINE.relayOnly == true or false,
         players = players,
@@ -483,7 +486,7 @@ end
 -- The countdown is over: everyone in the room plays the room's level.
 local function hostStart()
     roomState, roomCountdown, roomDirty = "playing", nil, true
-    local fp = fingerprintOf(LEVEL_NAME)
+    local fp = fingerprintOf(LEVEL_ROOT)
     for id, member in pairs(members) do
         if id ~= slots[1].id and member.has == fp then
             remoteIds[id] = true
@@ -494,7 +497,7 @@ local function hostStart()
     local seed = love.math.random(1, MAX_SEED)
     generation = generation + 1
     for id in pairs(remoteIds) do
-        net:sendTo(id, { t = "start", level = LEVEL_NAME, fp = fp, seed = seed, generation = generation,
+        net:sendTo(id, { t = "start", level = levelTitle(LEVEL_ROOT), fp = fp, seed = seed, generation = generation,
             players = sessionIds() })
     end
     gameplay.restart(seed)
@@ -521,7 +524,7 @@ end
 
 -- Host: does everyone in the room have the room's level?
 local function everyoneHasLevel()
-    local fp = fingerprintOf(LEVEL_NAME)
+    local fp = fingerprintOf(LEVEL_ROOT)
     for _, member in pairs(members) do
         if member.has ~= fp then
             return false
@@ -539,11 +542,12 @@ function gameplay.roomAction(action, step)
     end
     if action == "level" then
         local list = gameplay.levels()
-        local index = 1
-        for i, name in ipairs(list) do
-            if name == LEVEL_NAME then index = i end
+        local index = 0
+        for i, entry in ipairs(list) do
+            if entry.root == LEVEL_ROOT then index = i end
         end
-        LEVEL_NAME = list[(index - 1 + (step or 1)) % #list + 1] or LEVEL_NAME
+        local entry = list[(index - 1 + (step or 1)) % math.max(#list, 1) + 1]
+        LEVEL_ROOT = entry and entry.root or LEVEL_ROOT
         roomState, roomCountdown = "waiting", nil
     elseif action == "dropIn" then
         roomSettings.dropIn = not roomSettings.dropIn
@@ -585,7 +589,7 @@ local function updateRoom(delta)
         local count = 0
         for _ in pairs(members) do count = count + 1 end
         net:setRoomInfo({ players = count, playing = roomState == "playing", dropIn = roomSettings.dropIn,
-            public = roomSettings.public, level = LEVEL_NAME, name = roomSettings.name })
+            public = roomSettings.public, level = levelTitle(LEVEL_ROOT), name = roomSettings.name })
     end
 end
 
@@ -620,13 +624,13 @@ local hostHandler = {
         if roomState ~= "playing" or remoteIds[id] or not level then
             return
         end
-        if fp ~= fingerprintOf(LEVEL_NAME) then
-            net:kick(id, "you do not have the host's level " .. LEVEL_NAME)
+        if fp ~= fingerprintOf(LEVEL_ROOT) then
+            net:kick(id, "you do not have the host's level " .. levelTitle(LEVEL_ROOT))
             return
         end
         local hostPlayer = slots[1].player
         addToLevel(id, hostPlayer.spawnX, hostPlayer.spawnY)
-        net:sendTo(id, { t = "start", level = LEVEL_NAME, fp = fp, seed = level.seed, generation = generation,
+        net:sendTo(id, { t = "start", level = levelTitle(LEVEL_ROOT), fp = fp, seed = level.seed, generation = generation,
             players = sessionIds() })
         for other in pairs(remoteIds) do
             if other ~= id then
@@ -744,6 +748,75 @@ local function reconcile(state, h, flat)
     end
 end
 
+-- Client: tell the host whether this machine has the room's level. In an
+-- internet room a missing level is downloaded from the server first; the
+-- host hears once that is done (or failed). Called every frame.
+local function clientHasLevel()
+    if not room or not net then
+        return
+    end
+    local id, has = room.fp, ""
+    if levelpack.isId(id) and levels.byId(id) then
+        has = id
+    elseif ONLINE and levelpack.isId(id) then
+        if not download or download.id ~= id then
+            download = { id = id, request = repo.download(ONLINE.server, id) }
+        end
+        local done = download.request:poll()
+        if done == nil then
+            return -- still downloading
+        end
+        has = done and levels.byId(id) and id or ""
+    end
+    if sentHas ~= has then
+        sentHas = has
+        net:has(has)
+    end
+end
+
+-- Host of an internet room: is the room's level on the server (players
+-- without it get it from there)? Asked once per level; a downloaded level
+-- came from there.
+local function checkOnServer()
+    local id = fingerprintOf(LEVEL_ROOT)
+    if not ONLINE or not levelpack.isId(id) or (onServer and onServer.id == id and onServer.result ~= nil) then
+        return
+    end
+    local entry = levels.byRoot(LEVEL_ROOT)
+    if entry and entry.downloaded then
+        onServer = { id = id, result = true }
+        return
+    end
+    if not onServer or onServer.id ~= id then
+        onServer = { id = id, request = repo.info(ONLINE.server, id) }
+    end
+    local done, err = onServer.request:poll()
+    if done ~= nil then
+        onServer.result, onServer.err = done, err
+    end
+end
+
+-- What the waiting room says about the room's level on this machine: a
+-- client getting it from the server (or failing to), a host whose level is
+-- not on the server. Returns the text and whether it is a warning, or nil.
+function gameplay.levelStatus()
+    if NET_MODE == "client" and room and download and download.id == room.fp then
+        local done, err = download.request:poll()
+        if done == nil then
+            return "Downloading the level " .. tostring(room.level) .. "...", false
+        elseif not done then
+            return "Could not get the level: " .. tostring(err), true
+        end
+    elseif NET_MODE == "host" and onServer and onServer.id == fingerprintOf(LEVEL_ROOT) and onServer.result == false then
+        if onServer.err == "not on the server" then
+            return "This level is not on the server, so players without it cannot get it. "
+                .. "Upload it from Singleplayer (U).", true
+        end
+        return "Could not ask the server about this level: " .. tostring(onServer.err), true
+    end
+    return nil
+end
+
 -- The client's side of the session.
 local clientHandler = {
     -- In the room, with player id `you`.
@@ -751,24 +824,22 @@ local clientHandler = {
         slots[1].id = message.you
         netStatus = nil
     end,
-    -- The room changed: tell the host whether this machine has its level.
+    -- The room changed: tell the host whether this machine has its level,
+    -- after getting it from the server when it does not.
     room = function(message)
         room = message
-        local fp = fingerprintOf(message.level)
-        if sentHas ~= message.level .. fp then
-            sentHas = message.level .. fp
-            net:has(fp)
-        end
+        clientHasLevel()
     end,
     -- Play a level (everyone at the end of the countdown, or this machine
     -- dropping in): the same files as the host's, or leave.
     start = function(message)
-        if fingerprintOf(message.level) ~= message.fp then
-            netStatus = "Disconnected: your copy of level " .. message.level .. " differs from the host's"
+        local entry = levels.byId(message.fp)
+        if not entry then
+            netStatus = "Disconnected: you do not have the level " .. tostring(message.level)
             net:close()
             return
         end
-        LEVEL_NAME = message.level
+        LEVEL_ROOT = entry.root
         remoteIds = {}
         for _, id in ipairs(message.players) do
             if id ~= slots[1].id then
@@ -1047,9 +1118,13 @@ function gameplay.load()
     remoteIds = {}
     outbox = {}
     generation = 0
-    room, sentHas, fingerprints = nil, nil, {}
+    room, sentHas, fingerprints, download, onServer = nil, nil, {}, nil, nil
+    levels.refresh()
+    if not levels.byRoot(LEVEL_ROOT) and levels.list()[1] then
+        LEVEL_ROOT = levels.list()[1].root -- the level played last is gone
+    end
     members = { [1] = { name = PLAYER_NAME } }
-    members[1].has = fingerprintOf(LEVEL_NAME)
+    members[1].has = fingerprintOf(LEVEL_ROOT)
     roomCountdown, roomDirty = nil, true
     states = NET_MODE == "host" and statesync.host() or nil
     inputs = NET_MODE == "host" and inputsync.host() or nil
@@ -1080,12 +1155,16 @@ function gameplay.update(delta)
     if net then
         net:service()
         if NET_MODE == "host" and net.enet then
-            members[1].has = fingerprintOf(LEVEL_NAME)
+            members[1].has = fingerprintOf(LEVEL_ROOT)
             updateRoom(delta)
+            checkOnServer()
             if ONLINE and net.room then
                 showRoom()
             end
         end
+    end
+    if NET_MODE == "client" and net then
+        clientHasLevel()
     end
     if not playing() then
         return
@@ -1172,6 +1251,11 @@ end
 
 -- A full-screen message over the level: a title, a line of detail, and the
 -- keys that still work.
+-- The restart vote key as shown (it can be changed in Options).
+local function restartKey()
+    return require("scenes.options").keyName(input.KEYBOARD_LAYOUTS[1].restart)
+end
+
 local function drawBanner(title, detail, color, keys)
     love.graphics.setColor(0, 0, 0, 0.75)
     love.graphics.rectangle("fill", 0, 0, render.width, render.height)
@@ -1181,7 +1265,7 @@ local function drawBanner(title, detail, color, keys)
     if detail then
         text.printf(detail, 24, render.height / 2 - 12, render.width - 48, "center", 10)
     end
-    text.printf(keys or "R vote restart   ESC menu", 0, render.height / 2 + 30, render.width, "center", 10)
+    text.printf(keys or (restartKey() .. " vote restart   ESC menu"), 0, render.height / 2 + 30, render.width, "center", 10)
 end
 
 local OUTCOME_TITLES = { win = "LEVEL CLEAR", lose = "GAME OVER" }
@@ -1190,9 +1274,9 @@ local OUTCOME_TITLES = { win = "LEVEL CLEAR", lose = "GAME OVER" }
 -- everyone back to it.
 local function stoppedKeys()
     if NET_MODE == "host" and net then
-        return "ENTER back to the room   R vote restart   ESC leave"
+        return "ENTER back to the room   " .. restartKey() .. " vote restart   ESC leave"
     elseif NET_MODE == "client" then
-        return "The host can go back to the room   R vote restart   ESC leave"
+        return "The host can go back to the room   " .. restartKey() .. " vote restart   ESC leave"
     end
     return nil
 end
@@ -1276,7 +1360,7 @@ function gameplay.configure(options)
     NET_MODE, JOIN_ADDRESS = options.mode, options.address
     ONLINE = options.online
     NET_PORT, NET_BIND = options.port, options.bind
-    LEVEL_NAME = options.level or LEVEL_NAME
+    LEVEL_ROOT = options.level and loader.rootFor(options.level) or LEVEL_ROOT
     PLAYER_NAME = options.name or PLAYER_NAME
     local settings = options.room
     roomSettings = {

@@ -80,9 +80,11 @@ do
     check("other file types are refused", not resolves("entities/box.lua"))
     check("missing assets are refused", not resolves("assets/nope.png"))
     check("engine files outside shared graphics are refused", not resolves("assets/audio/sfx/hit.png"))
-    check("bundled names and roots map to roots", loader.rootFor("example") == "levels/example"
-        and loader.rootFor("online/" .. string.rep("a", 64)) == "online/" .. string.rep("a", 64)
-        and not pcall(loader.rootFor, "levels/../x") and not pcall(loader.rootFor, "../x"))
+    check("level names and roots map to roots", loader.rootFor("example") == "levels/example"
+        and loader.rootFor("downloads/" .. string.rep("a", 64)) == "downloads/" .. string.rep("a", 64)
+        and loader.rootFor("builtin/example") == "builtin/example"
+        and not pcall(loader.rootFor, "levels/../x") and not pcall(loader.rootFor, "../x")
+        and not pcall(loader.rootFor, "online/" .. string.rep("a", 64)))
 end
 
 -- ── Seeded level random ──────────────────────────────────────────────────
@@ -93,35 +95,21 @@ do
     check("a level's random follows its seed", x == y and x ~= z)
 end
 
--- ── Downloaded packages: a zipped copy of the example level ──────────────
+-- ── Downloaded levels: a package of the example level, installed ─────────
 do
     local levelpack = require("core.levelpack")
-    local zipName = "test_example_pack.zip"
-    local zipPath = love.filesystem.getSaveDirectory() .. "/" .. zipName
-    love.filesystem.createDirectory("") -- make sure the save directory exists
-    local made = os.execute(("python3 -c %q %q %q"):format(
-        "import os,sys,zipfile; "
-            .. "src,dst=sys.argv[1],sys.argv[2]; "
-            .. "z=zipfile.ZipFile(dst,'w'); "
-            .. "[z.write(os.path.join(d,f),os.path.relpath(os.path.join(d,f),src)) for d,_,fs in os.walk(src) for f in fs]; "
-            .. "z.close()",
-        love.filesystem.getSource() .. "/levels/example", zipPath))
-    if made ~= 0 and made ~= true then
-        print("skip  packaged level checks (python3 is needed to build the test zip)")
-    else
-        local hash = levelpack.hashFile(zipName)
-        local root, err = levelpack.mount(zipName, string.rep("0", 64))
-        check("a package with the wrong hash is refused", root == nil and tostring(err):find("mismatch"), err)
-        root, err = levelpack.mount(zipName, hash)
-        check("a package mounts at online/<sha256>", root == "online/" .. hash, err)
-        if root then
-            check("a package does not shadow bundled levels", not love.filesystem.getInfo("levels/" .. hash))
-            local bundled = run(600, EVEN, 2)
-            local packaged = run(600, EVEN, 2, root)
-            check("the packaged level plays exactly like the bundled one", bundled == packaged)
-            levelpack.unmount(hash)
-            check("unmounting removes the package", not love.filesystem.getInfo(root .. "/level.json"))
-        end
-        love.filesystem.remove(zipName)
+    local levels = require("core.levels")
+    local package = levelpack.pack("builtin/example")
+    local id = levelpack.sha256(package)
+    levels.remove("downloads/" .. id)
+    local root = levels.install(id, package)
+    check("a package installs at downloads/<id>", root == "downloads/" .. id)
+    if root then
+        check("... and packs back to the same package", levelpack.pack(root) == package)
+        local bundled = run(600, EVEN, 2)
+        local downloaded = run(600, EVEN, 2, root)
+        check("the downloaded level plays exactly like the bundled one", bundled == downloaded)
+        levels.remove(root)
+        check("removing a download deletes it", not love.filesystem.getInfo(root))
     end
 end

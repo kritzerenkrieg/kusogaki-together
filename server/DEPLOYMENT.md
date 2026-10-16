@@ -1,8 +1,8 @@
 # Deployment
 
-How to run the public server (`kusogaki-server`: lobby + relay) on a VPS. Phase 3 needs only this one binary; the repository (Phase 4) will add a database, object storage and HTTPS (below).
+How to run the public server (`kusogaki-server`: lobby, relay and level repository) on a VPS. It is one binary; the level repository keeps its files in one directory (`-data`). Accounts and HTTPS (later in Phase 4) will add more (below).
 
-Last updated: 2026-10-15. **Deployed** on 2026-10-15 at `103.150.92.215` (Ubuntu 22.04, x86-64; a shared VPS that also runs other services, so steps 2 and 3 only added to it): systemd unit and `kusogaki` user as below, ufw rules `26968/udp` and `27000:27999/udp` added. No domain yet.
+Last updated: 2026-10-15. **Deployed** on 2026-10-15 at `103.150.92.215` (Ubuntu 22.04, x86-64; a shared VPS that also runs other services, so steps 2 and 3 only added to it): systemd unit and `kusogaki` user as below, ufw rules `26968/udp` and `27000:27999/udp` added. Level repository added 2026-10-16 (`-data /var/lib/kusogaki-server`, `StateDirectory`, ufw `26968/tcp`). No domain yet.
 
 ---
 
@@ -13,8 +13,8 @@ Last updated: 2026-10-15. **Deployed** on 2026-10-15 at `103.150.92.215` (Ubuntu
 | Machine | 1 vCPU, 512 MB RAM is plenty; any Linux x86-64 or arm64 |
 | Network | a **public IPv4 address** (no NAT in front of the server), IPv6 not needed (`../OPEN_DECISION.md`, F8) |
 | Traffic | lobby: a few hundred bytes per join; relay: about 15 KB/s each way per relayed player (`relay/README.md`). 100 relayed players at once ≈ 1.5 MB/s ≈ 12 Mbit/s each way |
-| Ports (UDP, inbound) | `26968` (lobby) and `27000-27999` (relay pairs) |
-| Disk | the binary (~3 MB) and logs |
+| Ports (inbound) | UDP `26968` (lobby) and `27000-27999` (relay pairs); TCP `26968` (level repository, HTTP) |
+| Disk | the binary (~3 MB), logs, and the uploaded levels (at most 4 GB, `/var/lib/kusogaki-server`) |
 | Region | one, close to most players (`../OPEN_DECISION.md`, F4) |
 
 No database, no TLS certificate and no domain name are required for Phase 3; a domain is still nicer for players to type and lets the server move without changing everyone's setting.
@@ -49,10 +49,12 @@ Wants=network-online.target
 
 [Service]
 User=kusogaki
-ExecStart=/usr/local/bin/kusogaki-server -addr :26968 -relay-ports 27000-27999
+ExecStart=/usr/local/bin/kusogaki-server -addr :26968 -relay-ports 27000-27999 -data /var/lib/kusogaki-server
+# The level repository's files: /var/lib/kusogaki-server, owned by the service user
+StateDirectory=kusogaki-server
 Restart=always
 RestartSec=2
-# Hardening: no files to write, no privileges, ports above 1024
+# Hardening: no files to write but the state directory, no privileges, ports above 1024
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -83,11 +85,12 @@ Open only what the server uses (plus SSH). With `ufw`:
 ```sh
 ufw allow OpenSSH
 ufw allow 26968/udp
+ufw allow 26968/tcp
 ufw allow 27000:27999/udp
 ufw enable
 ```
 
-The VPS provider's own firewall (security group) needs the same UDP rules.
+The VPS provider's own firewall (security group) needs the same rules.
 
 ## 4. Name (optional)
 
@@ -113,6 +116,8 @@ install -m 0755 kusogaki-server /usr/local/bin/kusogaki-server
 systemctl restart kusogaki-server
 ```
 
+**Going to game 0.4.0 (the level repository)** also needs, once: the unit's `ExecStart` with `-data /var/lib/kusogaki-server` and the `StateDirectory=kusogaki-server` line (step 2), `systemctl daemon-reload`, and `ufw allow 26968/tcp` (step 3). Check it with `curl http://<vps>:26968/levels` (an empty list: `{"levels":[],"page":1,"pages":1}`).
+
 A restart forgets every room and closes every relay pair: hosts see "Room: lost the server", games connected directly keep playing, and relayed games are cut. Restart when few people play. When the control messages change incompatibly, the version in them goes from `KG1` to `KG2`; run the old and new servers side by side on different ports until old games are gone.
 
 ## Logs and privacy
@@ -129,15 +134,15 @@ A restart forgets every room and closes every relay pair: hosts see "Room: lost 
 
 ---
 
-## Later: the repository (Phase 4)
+## Later: accounts and HTTPS (rest of Phase 4)
 
-`repository/README.md` will need, on top of the above:
+The level repository runs in the binary above (`-data`). Accounts, HTTPS and the upload load test (`repository/README.md`, Phase 4 design) will need, on top of it:
 
 | What | Why |
 |---|---|
 | HTTPS (a domain and a certificate, for example from Let's Encrypt via a reverse proxy such as Caddy) | accounts and uploads; the game uses `lua-https` |
 | Postgres | accounts, levels, versions, ratings, reports |
-| S3-compatible object storage | level packages (`levels/<sha256>.zip`) |
+| S3-compatible object storage (once one directory is not enough) | level packages |
 | A sandboxed container runner | the headless load test of every upload (no network, CPU/memory/time limits) |
 | Backups | Postgres and the bucket |
 

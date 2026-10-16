@@ -259,3 +259,104 @@ do
     got.client:close()
     host:close()
 end
+
+-- A client in a room without the room's level gets it from the server (the
+-- level repository), then tells the host it has it. A host whose level is
+-- not on the server is told players cannot get it. Uploads only to a test
+-- server: the real one's list is public.
+if SERVER_IP == "127.0.0.1" then
+    local gameplay = require("scenes.gameplay")
+    local levels = require("core.levels")
+    local levelpack = require("core.levelpack")
+    local repo = require("core.net.repo")
+    local json = require("core.json")
+
+    -- A level of its own (the top-down level under another name), on the server only.
+    local function makeLevel(name)
+        levelpack.removeTree("levels/" .. name)
+        love.filesystem.createDirectory("levels/" .. name)
+        for _, entry in ipairs(assert(levelpack.unpack((levelpack.pack("builtin/topdown"))))) do
+            local data = entry.data
+            if entry.path == "level.json" then
+                local decoded = json.decode(data)
+                decoded.name = name
+                data = json.encode(decoded)
+            end
+            love.filesystem.createDirectory(("levels/%s/%s"):format(name, entry.path):match("^(.*)/"))
+            love.filesystem.write(("levels/%s/%s"):format(name, entry.path), data)
+        end
+        levels.refresh()
+        return levelpack.fingerprint("levels/" .. name)
+    end
+    local id = makeLevel("roomdl")
+    local uploaded = repo.upload(SERVER, "levels/roomdl", "Tester"):wait()
+    levelpack.removeTree("levels/roomdl")
+    levels.refresh()
+    check("the room's level is on the server, not here", uploaded and levels.byId(id) == nil)
+
+    local has = nil
+    local host = assert(session.host({
+        port = PORT + 2, bind = BIND,
+        rendezvous = { server = SERVER },
+        handler = {
+            accept = function() return 2 end,
+            welcome = function() end,
+            has = function(_, fp) has = fp end,
+            left = function() end,
+        },
+    }))
+    local code = openRoom(host)
+    gameplay.configure({ mode = "client", name = "Dl", online = { server = SERVER, code = code } })
+    gameplay.load()
+    local sentRoom = false
+    local function step()
+        host:service()
+        gameplay.update(1 / 60)
+        if not sentRoom then -- once the client is in
+            sentRoom = host:sendTo(2, { t = "room", name = "Dl room", code = code, level = "roomdl", fp = id,
+                st = "waiting", cd = 0, di = true, pub = true, relay = false,
+                players = { { id = 1, name = "Host", has = true }, { id = 2, name = "Dl", has = false } } })
+        end
+    end
+    local sawDownloading = false
+    local deadline = love.timer.getTime() + 8
+    while love.timer.getTime() < deadline and has ~= id do
+        step()
+        sawDownloading = sawDownloading or (gameplay.levelStatus() or ""):find("Downloading") ~= nil
+        love.timer.sleep(0.005)
+    end
+    check("a client without the room's level downloads it", levels.byId(id) and levels.byId(id).downloaded,
+        tostring(gameplay.levelStatus()))
+    check("... says so in the room meanwhile", sawDownloading)
+    check("... and then tells the host it has it", has == id, tostring(has))
+    local roomScene = require("scenes.room")
+    local lines = roomScene.settingLines() or {}
+    check("a player in the room sees the host's settings", lines[1] == "Level: roomdl"
+        and lines[2] == "Drop-in: On" and lines[3] == "Public: On" and lines[4] == "Connection: direct",
+        table.concat(lines, ", "))
+    check("the waiting room draws (client)", pcall(roomScene.draw))
+    check("... with Leave as its only item", roomScene.keypressed("down") == nil
+        and roomScene.keypressed("up") == nil)
+    gameplay.closeNetwork()
+    host:close()
+    levels.remove("downloads/" .. id)
+
+    local missingId = makeLevel("nothere")
+    gameplay.configure({ mode = "host", port = PORT + 4, bind = BIND, level = "nothere", name = "Hosty",
+        online = { server = SERVER }, room = { name = "Lonely", public = false, dropIn = true } })
+    gameplay.load()
+    local warned
+    deadline = love.timer.getTime() + 5
+    while love.timer.getTime() < deadline and not warned do
+        gameplay.update(1 / 60)
+        local line, warning = gameplay.levelStatus()
+        warned = warning and line and line:find("not on the server") and line
+        love.timer.sleep(0.005)
+    end
+    check("a host whose level is not on the server is told", warned ~= nil and levelpack.isId(missingId))
+    gameplay.closeNetwork()
+    levelpack.removeTree("levels/nothere")
+    levels.refresh()
+    gameplay.configure({})
+    gameplay.load()
+end

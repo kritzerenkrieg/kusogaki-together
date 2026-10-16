@@ -14,7 +14,9 @@ local text = require("core.text")
 require("scenes.title_screen")
 require("scenes.lobby")
 require("scenes.room")
+require("scenes.levels")
 local options = require("scenes.options")
+local levels = require("core.levels")
 
 local NOTICE_SECONDS = 10
 local noticeTime = 0 -- seconds left showing why the last run was closed
@@ -26,10 +28,11 @@ function love.load()
     end
     render.load()
     options.load()
+    levels.seed() -- the built-in levels into the save directory's levels/
 
     local titleScreen = require("scenes.title_screen")
     titleScreen.load()
-    gameplay.load()
+    pcall(gameplay.load) -- ready for the command line's shortcuts; a broken level waits for the menu
 
     fx.setSceneManager(function(name)
         sceneEngine.switch(name)
