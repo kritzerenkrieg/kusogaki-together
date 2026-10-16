@@ -253,6 +253,67 @@ do
         level.finished and level.finished.message)
 end
 
+-- ── Example level: the gap with an invisible bridge (scripts/bridge.lua)
+do
+    local function cross(jumpAt)
+        local level = Level.load("example")
+        local player = level:addPlayer(playerModule.new(1872, 266))
+        local spikesSeen = false
+        for _ = 1, 90 do
+            player.input = { right = true, jump = jumpAt and player.x >= jumpAt or false }
+            level:update(1 / 60)
+            spikesSeen = spikesSeen or level.net.bridgeSpikes ~= nil
+            if player.dead then break end
+        end
+        return level, player, spikesSeen
+    end
+    local level, walker, spikes = cross(nil)
+    check("walking over the gap stays on the invisible bridge", not walker.dead and walker.x > 2000
+        and math.abs(walker.y - 266) < 1 and not spikes, walker.x .. "," .. walker.y)
+    local level2, jumper, spikes2 = cross(1906)
+    check("jumping over the gap raises spikes where it lands", jumper.dead and spikes2, tostring(jumper.dead))
+    for _ = 1, 180 do
+        jumper.input = {}
+        level2:update(1 / 60)
+    end
+    check("the spikes sink back", level2.net.bridgeSpikes == nil and #level2.hazards == #level.hazards)
+end
+
+-- ── Example level: the bricks over the spike pit swap with the spikes (scripts/swap.lua)
+do
+    local level = Level.load("example")
+    local function at(list, typeName, y)
+        local count = 0
+        for _, entity in ipairs(level[list]) do
+            if entity.typeName == typeName and entity.y == y and entity.x > 2256 and entity.x < 2464 then
+                count = count + 1
+            end
+        end
+        return count
+    end
+    check("the pit starts as bricks over spikes", at("blocks", "brick", 254) == 7 and at("hazards", "spike", 270) == 11)
+    local player = level:addPlayer(playerModule.new(2050, 266)) -- clear of the dodon at 2184
+    for _ = 1, 30 do
+        player.input = {}
+        level:update(1 / 60)
+    end
+    check("nothing swaps before a brick is touched", not level.net.swapped)
+    player.x, player.y, player.vx, player.vy = 2296, 234, 0, 0 -- standing on a brick
+    for _ = 1, 10 do
+        player.input = {}
+        level:update(1 / 60)
+    end
+    check("touching a brick turns the bricks to spikes and the spikes to metal", level.net.swapped
+        and at("hazards", "spike", 254) == 7 and at("blocks", "metal", 270) == 11
+        and at("blocks", "brick", 254) == 0 and at("hazards", "spike", 270) == 0)
+    check("the brick it stood on is now a spike", player.dead)
+    for _ = 1, 150 do
+        player.input = {}
+        level:update(1 / 60)
+    end
+    check("it stays swapped after a respawn", not player.dead and at("hazards", "spike", 254) == 7)
+end
+
 -- The walk cycle uses all four frames of its row: 2, 3, 4, 1.
 do
     local view = require("core.player.view")
