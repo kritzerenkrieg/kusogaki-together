@@ -31,11 +31,12 @@ local function drawEdgeMarker(player)
 end
 
 -- players: the level's players in join order; canJoin: show the join hint;
--- locals: the ids of the players this machine plays (nil: all of them).
-function hud.draw(players, canJoin, locals)
+-- locals: the ids of the players this machine plays (nil: all of them);
+-- hideState: leave out the state lines (levels show them only with "hud": true).
+function hud.draw(players, canJoin, locals, hideState)
     local row = 0
     for _, player in ipairs(players) do
-        if locals == nil or locals[player.id] then
+        if not hideState and (locals == nil or locals[player.id]) then
             local carried = player.carrying
             local carry = carried and (carried.isPlayer and ("P" .. carried.id) or carried.name) or "-"
             setTint(player, 0.85)

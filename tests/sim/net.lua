@@ -476,7 +476,7 @@ do
 
     gameplay.roomAction("level", 1)
     run(300, function() return ann.room.level ~= "example" and ann.room.players[2].has end)
-    check("the host changes the level; players say whether they have it", ann.room.level == "topdown"
+    check("the host changes the level; players say whether they have it", ann.room.level == "kusogaki_stage2"
         and ann.room.players[2].has)
     gameplay.roomAction("level", -1)
     missing = true

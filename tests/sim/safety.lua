@@ -54,7 +54,8 @@ end
 -- could: table fields, metatables it may read, and lookups through protected
 -- metatables. Fails on engine modules, dangerous built-ins and functions from
 -- modules scripts must never reach.
-for _, case in ipairs({ { "example", inputAt }, { "topdown", topdownInput } }) do
+for _, case in ipairs({ { "example", inputAt }, { "topdown", topdownInput },
+    { "kusogaki_stage2", inputAt }, { "kusogaki_stage3", inputAt } }) do
     local script = require("core.script")
     local loader = require("core.level.loader")
     local level = Level.load(case[1])

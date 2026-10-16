@@ -76,6 +76,8 @@ function Level.load(nameOrRoot, options)
     self.actions = data.actions -- custom input actions (core/input.lua)
     self.actionNames = input.names(data.actions)
     self.camera = data.camera   -- { follow, zoom, x, y, clamp }; see camera.frame
+    self.music = data.music     -- the game's track to play (nil: the default)
+    self.hud = data.hud         -- true: each local player's state line in the corner
     self.stages = stages.defaults()
     self.playerController = nil -- custom controller for every player (nil: platformer)
     self.net = {}               -- level script state synced to clients (plain data)

@@ -118,6 +118,8 @@ local alpha = 0                     -- how far the frame sits between ticks (dra
 local tick = 0                      -- ticks since the level was built
 
 local RESTART_COUNTDOWN = 5 -- seconds from a passed restart vote to the restart
+local DEFAULT_MUSIC = "playground.flac" -- for levels without "music"
+local VICTORY_SOUND = "victory.wav"
 local votes = {}            -- player id -> true: votes to restart
 local countdown = nil       -- seconds left until the restart, while the vote passes
 local outbox = {}           -- session messages for the other machines
@@ -1151,6 +1153,16 @@ local function showRoom()
     end
 end
 
+-- The victory sound, once per won level (on hosts and clients alike: each
+-- sees `finished` in its own copy of the level).
+local cheeredLevel = nil
+local function cheer()
+    if level and level.finished and level.finished.outcome == "win" and cheeredLevel ~= level then
+        cheeredLevel = level
+        audio.playSfx(VICTORY_SOUND)
+    end
+end
+
 function gameplay.update(delta)
     if net then
         net:service()
@@ -1194,6 +1206,7 @@ function gameplay.update(delta)
     if NET_MODE == "host" and net then
         flushOutbox()
     end
+    cheer()
 end
 
 function gameplay.keypressed(key)
@@ -1246,7 +1259,7 @@ local function drawLevel()
     camera.popWorld()
     worldPushed = false
     level:drawHud()
-    hud.draw(level.players, LOCAL_COOP and #slots < Level.MAX_PLAYERS, localIds())
+    hud.draw(level.players, LOCAL_COOP and #slots < Level.MAX_PLAYERS, localIds(), not level.hud)
 end
 
 -- A full-screen message over the level: a title, a line of detail, and the
@@ -1393,9 +1406,19 @@ function gameplay.setSource(index, source)
     slots[index].source = source
 end
 
+-- The level's music (level.json "music") when the game has that track, else
+-- the default.
+function gameplay.musicFor(level)
+    local name = level and level.music
+    if name and love.filesystem.getInfo(audio.musicPath .. "/" .. name, "file") then
+        return name
+    end
+    return DEFAULT_MUSIC
+end
+
 sceneEngine.register("gameplay", {
     enter = function()
-        audio.playMusic("playground.flac")
+        audio.playMusic(gameplay.musicFor(level))
         if level then
             watchdog.enter(level.root)
         end

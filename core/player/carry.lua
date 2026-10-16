@@ -21,12 +21,12 @@ function carry.grabBox(self)
 end
 
 -- Can `self` pick up `body`? Players: alive, not held and not carrying anyone
--- (no carry chains).
+-- (no carry chains). A body with `noGrab` set (e.g. a boss) cannot be picked up.
 local function grabbable(self, body)
     if body.isPlayer then
         return body ~= self and not body.dead and not body.held and not body.carrying
     end
-    return not body.held and not body.killedBy
+    return not body.held and not body.killedBy and not body.noGrab
 end
 
 -- Nearest loose prop, live enemy or free player overlapping the grab box, or nil.

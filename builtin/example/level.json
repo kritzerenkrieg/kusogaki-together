@@ -4,12 +4,12 @@
   "size": {"w": 3392, "h": 360},
   "scripts": ["tutorial", "goal", "bridge", "swap"],
   "spawn": {"x": 40, "y": 236},
+  "hud": true,
   "background": {"sky": [0.44, 0.62, 0.83]},
   "static": [
     {"x": 368.0, "y": 322, "w": 736, "h": 88, "tiles": {"top": "grass", "fill": "dirt", "randomFill": true}},
     {"x": 1488.0, "y": 322, "w": 864, "h": 88, "tiles": {"top": "grass", "fill": "dirt", "randomFill": true}},
     {"x": 2336.0, "y": 322, "w": 704, "h": 88, "tiles": {"top": "grass", "fill": "dirt", "randomFill": true}},
-    {"x": 1952, "y": 286, "w": 64, "h": 16, "color": [0, 0, 0, 0], "wall": true},
     {"x": 3184.0, "y": 322, "w": 416, "h": 88, "tiles": {"top": "grass", "fill": "dirt", "randomFill": true}},
     {"x": 1296.0, "y": 238.0, "w": 32, "h": 80, "tiles": {"fill": "metal"}},
     {"x": 1584.0, "y": 262.0, "w": 32, "h": 32, "tiles": {"fill": "metal"}},
@@ -21,7 +21,7 @@
     {"x": 3112.0, "y": 238.0, "w": 16, "h": 80, "tiles": {"fill": "metal"}},
     {"x": 3128.0, "y": 230.0, "w": 16, "h": 96, "tiles": {"fill": "metal"}},
     {"x": 3240.0, "y": 270.0, "w": 16, "h": 16, "tiles": {"fill": "metal"}},
-    {"x": 3240, "y": 190, "w": 4, "h": 144, "color": [0.75, 0.9, 0.75], "wall": true},
+    {"x": 3240, "y": 190, "w": 8, "h": 144, "tiles": {"fill": "pole"}},
     {"x": -8, "y": 116, "w": 16, "h": 400, "color": [0.22, 0.28, 0.38], "wall": true},
     {"x": 3400, "y": 116, "w": 16, "h": 400, "color": [0.22, 0.28, 0.38], "wall": true}
   ],
@@ -56,6 +56,7 @@
     {"type": "dodon", "x": 1664.0, "y": 270},
     {"type": "dodon", "x": 1704.0, "y": 270},
     {"type": "dodon", "x": 2184, "y": 270},
+    {"type": "spike", "x": 2264, "y": 270},
     {"type": "spike", "x": 2280, "y": 270},
     {"type": "spike", "x": 2296, "y": 270},
     {"type": "spike", "x": 2312, "y": 270},
@@ -67,6 +68,7 @@
     {"type": "spike", "x": 2408, "y": 270},
     {"type": "spike", "x": 2424, "y": 270},
     {"type": "spike", "x": 2440, "y": 270},
+    {"type": "spike", "x": 2456, "y": 270},
     {"type": "brick", "x": 2264, "y": 254},
     {"type": "brick", "x": 2296, "y": 254},
     {"type": "brick", "x": 2328, "y": 254},
@@ -83,6 +85,7 @@
     {"type": "dokan", "x": 2856, "y": 385, "target": {"x": 2824, "y": 218}, "trigger": {"x": 2824, "y": 218, "radius": 20}, "blast": 32},
     {"type": "checkpoint", "x": 2536, "y": 262},
     {"type": "mystery_boom", "x": 3160, "y": 142},
-    {"type": "fake_box", "x": 3192, "y": 270}
+    {"type": "fake_box", "x": 3192, "y": 270},
+    {"type": "bridge", "x": 1952, "y": 286, "w": 64, "h": 16}
   ]
 }

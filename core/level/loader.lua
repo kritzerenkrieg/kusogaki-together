@@ -190,6 +190,14 @@ local function cameraFrom(def, spawn, path)
     }
 end
 
+-- level.json "music": a track of the game's (assets/audio/music), by file name.
+local function musicFrom(value, path)
+    if value ~= nil and (type(value) ~= "string" or not value:match("^[%w_]+%.%a+$")) then
+        error(path .. ": music must be a file name like \"level1.flac\"", 0)
+    end
+    return value
+end
+
 local function numberIn(value, low, high, name, path)
     if value == nil then
         return nil
@@ -205,7 +213,7 @@ end
 -- Returns plain level data:
 -- { name, root, size, spawn, background, statics, hazards, blocks, enemies,
 --   props, triggers, scripts, random, types, nextId, gravity, maxFall, actions,
---   camera }.
+--   camera, music, hud }.
 function loader.load(nameOrRoot, options)
     options = options or {}
     local root = loader.rootFor(nameOrRoot)
@@ -262,6 +270,8 @@ function loader.load(nameOrRoot, options)
         maxFall = numberIn(data.maxFall, 0, 100000, "maxFall", path),
         actions = input.parseActions(data.actions, path),
         camera = cameraFrom(data.camera, spawn, path),
+        music = musicFrom(data.music, path),
+        hud = data.hud == true,
     }
 end
 

@@ -38,6 +38,8 @@ Only these files are part of a level: `level.json`, `entities/<name>.lua`, `scri
 | `actions` | custom input actions; see Input |
 | `scripts` | level script names, run in this order |
 | `background` | `{ "sky": [r, g, b] }` |
+| `music` | the game's music track to play, by file name (`"level1.flac"`); default `"playground.flac"`. Tracks are too big for packages, so a level picks one of the game's. |
+| `hud` | `true` shows each player's state line (`P1 RUN  CARRY: -`) in the corner (off by default); level scripts draw their own HUD either way |
 | `static` | solid rectangles `{ x, y, w, h, color }` or tiled `{ ..., "tiles": { "top", "fill" } }` |
 | `entities` | placements `{ "type", "x", "y", ... }`; the whole placement goes to `Type.new(x, y, def)` |
 
@@ -90,7 +92,7 @@ Functions a type may define:
 | `draw(ui)` | draw it (default: its sprite). See Drawing. |
 | `netFields` | a list of extra field names clients need for drawing (plain data) |
 
-Base helpers: `self:move(delta, level)` (move without gravity, stop at statics), `self:groundAhead(level, dir)`, `self:playSfx("name.wav")`, `Entity.loadImage(path)`, `Entity.sliceFrames(image, w, h)`. Draw fields: `frameIndex`, `facing`, `rotation`, `flash`. Physics fields: `x, y, w, h, vx, vy, onGround`, and `gravityScale` (gravity multiplier, default 1; 0 floats).
+Base helpers: `self:move(delta, level)` (move without gravity, stop at statics), `self:groundAhead(level, dir)`, `self:playSfx("name.wav")`, `Entity.loadImage(path)`, `Entity.sliceFrames(image, w, h)`. Draw fields: `frameIndex`, `facing`, `rotation`, `flash`. Physics fields: `x, y, w, h, vx, vy, onGround`, and `gravityScale` (gravity multiplier, default 1; 0 floats). `noGrab = true` keeps players from picking it up (a boss).
 
 `id`, `kind` and `typeName` belong to the engine; don't set them.
 

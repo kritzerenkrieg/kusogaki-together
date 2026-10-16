@@ -255,28 +255,38 @@ end
 
 -- ── Example level: the gap with an invisible bridge (scripts/bridge.lua)
 do
+    local function bridgeCount(level)
+        local count = 0
+        for _, block in ipairs(level.blocks) do
+            if block.typeName == "bridge" then count = count + 1 end
+        end
+        return count
+    end
     local function cross(jumpAt)
         local level = Level.load("example")
         local player = level:addPlayer(playerModule.new(1872, 266))
-        local spikesSeen = false
+        local spikesSeen, bridgeGone = false, false
         for _ = 1, 90 do
             player.input = { right = true, jump = jumpAt and player.x >= jumpAt or false }
             level:update(1 / 60)
             spikesSeen = spikesSeen or level.net.bridgeSpikes ~= nil
+            bridgeGone = bridgeGone or (level.net.bridgeSpikes ~= nil and bridgeCount(level) == 0)
             if player.dead then break end
         end
-        return level, player, spikesSeen
+        return level, player, spikesSeen, bridgeGone
     end
     local level, walker, spikes = cross(nil)
     check("walking over the gap stays on the invisible bridge", not walker.dead and walker.x > 2000
         and math.abs(walker.y - 266) < 1 and not spikes, walker.x .. "," .. walker.y)
-    local level2, jumper, spikes2 = cross(1906)
+    local level2, jumper, spikes2, gone = cross(1906)
     check("jumping over the gap raises spikes where it lands", jumper.dead and spikes2, tostring(jumper.dead))
+    check("... and the bridge vanishes while they are up", gone)
     for _ = 1, 180 do
         jumper.input = {}
         level2:update(1 / 60)
     end
-    check("the spikes sink back", level2.net.bridgeSpikes == nil and #level2.hazards == #level.hazards)
+    check("the spikes sink back and the bridge returns", level2.net.bridgeSpikes == nil
+        and #level2.hazards == #level.hazards and bridgeCount(level2) == 1)
 end
 
 -- ── Example level: the bricks over the spike pit swap with the spikes (scripts/swap.lua)
@@ -291,7 +301,7 @@ do
         end
         return count
     end
-    check("the pit starts as bricks over spikes", at("blocks", "brick", 254) == 7 and at("hazards", "spike", 270) == 11)
+    check("the pit starts as bricks over spikes", at("blocks", "brick", 254) == 7 and at("hazards", "spike", 270) == 13)
     local player = level:addPlayer(playerModule.new(2050, 266)) -- clear of the dodon at 2184
     for _ = 1, 30 do
         player.input = {}
@@ -304,7 +314,7 @@ do
         level:update(1 / 60)
     end
     check("touching a brick turns the bricks to spikes and the spikes to metal", level.net.swapped
-        and at("hazards", "spike", 254) == 7 and at("blocks", "metal", 270) == 11
+        and at("hazards", "spike", 254) == 7 and at("blocks", "metal", 270) == 13
         and at("blocks", "brick", 254) == 0 and at("hazards", "spike", 270) == 0)
     check("the brick it stood on is now a spike", player.dead)
     for _ = 1, 150 do
@@ -312,6 +322,162 @@ do
         level:update(1 / 60)
     end
     check("it stays swapped after a respawn", not player.dead and at("hazards", "spike", 254) == 7)
+end
+
+-- ── kusogaki_stage2: music, no player HUD, crumbling blocks (scripts/parkour.lua)
+do
+    local level = Level.load("kusogaki_stage2")
+    check("stage 2 plays level1 without the player HUD", level.music == "level1.flac" and not level.hud and Level.load("example").hud
+        and require("scenes.gameplay").musicFor(level) == "level1.flac")
+    check("levels without music get the default", require("scenes.gameplay").musicFor(Level.load("example")) == "playground.flac")
+    local function crumbles()
+        local count = 0
+        for _, block in ipairs(level.blocks) do
+            if block.typeName == "crumble" then count = count + 1 end
+        end
+        return count
+    end
+    local total = crumbles()
+    local player = level:addPlayer(playerModule.new(1000, 266)) -- standing still on the crumbling bridge
+    for _ = 1, 40 do
+        player.input = {}
+        level:update(1 / 60)
+    end
+    check("standing on crumbling blocks drops the player", crumbles() < total and player.vy > 0, crumbles())
+    for _ = 1, 400 do
+        player.input = {}
+        level:update(1 / 60)
+    end
+    check("crumbled blocks come back", crumbles() == total and #level.net.crumbled == 0, crumbles())
+    local runner = Level.load("kusogaki_stage2")
+    local p = runner:addPlayer(playerModule.new(930, 266))
+    for _ = 1, 150 do
+        p.input = { right = true }
+        runner:update(1 / 60)
+        if p.dead or p.x > 1180 then break end
+    end
+    check("running over the crumbling bridge makes it", not p.dead and p.x > 1160, p.x)
+    local climber = Level.load("kusogaki_stage2")
+    local c = climber:addPlayer(playerModule.new(2364, 250)) -- standing on the box before the wall
+    for _ = 1, 15 do
+        c.input = {}
+        climber:update(1 / 60)
+    end
+    for _ = 1, 60 do
+        c.input = { right = true, jump = true }
+        climber:update(1 / 60)
+    end
+    check("the wall can be climbed from the box", not c.dead and c.x > 2400 and c.y < 198, c.x .. "," .. c.y)
+end
+
+-- ── Trolls in stages 2 and 3: hidden blocks and traps (scripts/trolls.lua)
+do
+    local function jumpPit(jumpAt)
+        local level = Level.load("kusogaki_stage2")
+        local player = level:addPlayer(playerModule.new(200, 266))
+        local bonked = false
+        for _ = 1, 90 do
+            player.input = { right = true, jump = player.x >= jumpAt }
+            level:update(1 / 60)
+            for _, trigger in ipairs(level.triggers) do
+                bonked = bonked or (trigger.typeName == "hidden_block" and trigger.blockId ~= nil)
+            end
+        end
+        return level, player, bonked
+    end
+    for _, jumpAt in ipairs({ 300, 310, 318 }) do
+        local _, _, bonked = jumpPit(jumpAt)
+        check("jumping the first pit bonks a hidden block (jump at " .. jumpAt .. ")", bonked)
+    end
+    local level, player = jumpPit(312)
+    for _ = 1, 150 do
+        player.input = {}
+        level:update(1 / 60)
+    end
+    local hidden = 0
+    for _, trigger in ipairs(level.triggers) do
+        if trigger.typeName == "hidden_block" and trigger.x < 400 then hidden = hidden + 1 end
+    end
+    check("the hidden block goes away again", hidden == 2, hidden)
+
+
+    local trapLevel = Level.load("kusogaki_stage2")
+    local walker = trapLevel:addPlayer(playerModule.new(830, 266))
+    local hazardsBefore = #trapLevel.hazards
+    for _ = 1, 30 do
+        walker.input = { right = true }
+        trapLevel:update(1 / 60)
+        if walker.x > 872 then walker.input = {} break end
+    end
+    check("a trap raises spikes ahead", #trapLevel.hazards == hazardsBefore + 3, #trapLevel.hazards)
+    walker.x = 800
+    for _ = 1, 180 do
+        walker.input = {}
+        trapLevel:update(1 / 60)
+    end
+    check("a timed trap's spikes go away", #trapLevel.hazards == hazardsBefore)
+end
+
+-- ── kusogaki_stage3: the Dodon King (entities/dodon_king.lua, scripts/boss.lua)
+do
+    local level = Level.load("kusogaki_stage3")
+    local king = level:get(level.net.kingId)
+    check("stage 3 has the king and plays level3", king and king.hp == 8 and level.music == "level3.flac" and not level.hud)
+    local player = level:addPlayer(playerModule.new(3300, 266))
+    local function step(frames)
+        for _ = 1, frames do
+            player.input = {}
+            level:update(1 / 60)
+        end
+    end
+    step(2)
+    check("the king wakes and shows its bar", level.net.kingAwake and king.awake)
+    local function stomp()
+        player.dead = false
+        player.x, player.y, player.vx, player.vy = king.x, king.y - king.h / 2 - player.h / 2 - 1, 0, 200
+        player.prevY = player.y
+        for _ = 1, 3 do
+            player.input = {}
+            level:update(1 / 60)
+            if player.vy < 0 or king.removed then break end
+        end
+    end
+    stomp()
+    check("a stomp takes one health and bounces", king.hp == 7 and not player.dead and player.vy < 0, king.hp)
+    stomp()
+    check("it cannot be hurt right after a hit", king.hp == 7)
+    check("it cannot be picked up", king.noGrab)
+    step(70)
+    king.killedBy = "kick" -- what a thrown prop does to an enemy
+    level:update(1 / 60)
+    check("thrown props take one health instead of killing it", king.hp == 6 and not king.removed, king.hp)
+    king.hp, king.hurt = 1, 0
+    player.x = 3300
+    step(1)
+    local minionsBefore = #level.enemies
+    king.hp = 4
+    king.onGround, king.wasAirborne = true, true
+    step(1)
+    check("at half health its landings send dodons in", #level.enemies == minionsBefore + 1, #level.enemies)
+    king.hp, king.hurt = 1, 0
+    stomp()
+    check("its health running out the first time only makes it play dead", not king.removed
+        and king.fakeDead > 0 and king.hp == 0 and not level.finished)
+    player.x, player.y, player.vx, player.vy = king.x + 4, king.y, 0, 0
+    step(1)
+    check("playing dead, it is harmless", not player.dead)
+    player.x = 3300
+    step(170)
+    check("then it gets back up", king.fakeDead == 0 and king.hp == 4 and level.net.kingRevived, king.hp)
+    king.hp, king.hurt = 1, 0
+    stomp()
+    check("the second time it is down for good", king.removed)
+    for _ = 1, 120 do
+        if level.finished then break end
+        player.input = {}
+        level:update(1 / 60)
+    end
+    check("beating the king wins", level.finished and level.finished.outcome == "win", level.finished and level.finished.message)
 end
 
 -- The walk cycle uses all four frames of its row: 2, 3, 4, 1.
