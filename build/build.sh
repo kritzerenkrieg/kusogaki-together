@@ -85,8 +85,8 @@ root=$STAGE/squashfs-root
 cat "$root/bin/love" "$GAME" > "$root/bin/love.fused" && mv "$root/bin/love.fused" "$root/bin/love"
 chmod +x "$root/bin/love"
 sed -i "s/^Name=.*/Name=$NAME/" "$root"/*.desktop
-APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "$tool" --no-appstream "$root" "$DIST/$BASE-linux-x86_64.AppImage" >/dev/null 2>&1 \
-    || { echo "appimagetool failed"; exit 1; }
+APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "$tool" --no-appstream "$root" "$DIST/$BASE-linux-x86_64.AppImage" >"$STAGE/appimagetool.log" 2>&1 \
+    || { cat "$STAGE/appimagetool.log"; echo "appimagetool failed"; exit 1; }
 
 cp build/PLAYTEST.txt "$DIST/"
 rm -rf "$STAGE"
