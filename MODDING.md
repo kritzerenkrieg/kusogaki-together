@@ -4,7 +4,7 @@ How to make a level: the package, `level.json`, entity type scripts and level sc
 
 Engine internals are in `ARCHITECTURE.md`; the sandbox rules in `TECHNICAL.md` (Sandbox); online play in `NETWORKING.md`.
 
-**Where levels go:** the save directory's `levels/` folder (Singleplayer → Open my levels folder; the paths are in `NETWORKING.md`, Level repository). Each level is a folder there. Singleplayer lists them; U uploads one to the server so others can download it and play it in rooms. The game's own levels are copied there at startup; edit a copy and the game leaves it alone. From source: `love2d . --level <name>` plays `levels/<name>` (default `example`).
+**Where levels go:** the save directory's `levels/` folder (Singleplayer → Open my levels folder; the paths are in `NETWORKING.md`, Level repository). Each level is a folder there. Singleplayer lists them; U uploads one to the server so others can download it and play it in rooms. The game's own levels are copied there at startup; edit a copy and the game leaves it alone. From source: `love2d . --level <name>` plays `levels/<name>` (default `kusogaki_stage1`).
 
 ---
 
@@ -92,7 +92,7 @@ Functions a type may define:
 | `draw(ui)` | draw it (default: its sprite). See Drawing. |
 | `netFields` | a list of extra field names clients need for drawing (plain data) |
 
-Base helpers: `self:move(delta, level)` (move without gravity, stop at statics), `self:groundAhead(level, dir)`, `self:playSfx("name.wav")`, `Entity.loadImage(path)`, `Entity.sliceFrames(image, w, h)`. Draw fields: `frameIndex`, `facing`, `rotation`, `flash`. Physics fields: `x, y, w, h, vx, vy, onGround`, and `gravityScale` (gravity multiplier, default 1; 0 floats). `noGrab = true` keeps players from picking it up (a boss).
+Base helpers: `self:move(delta, level)` (move without gravity, stop at statics), `self:groundAhead(level, dir)`, `self:playSfx("name.wav")`, `self:breakApart()` (debris chips and sound; remove the entity yourself), `Entity.loadImage(path)`, `Entity.sliceFrames(image, w, h)`. Draw fields: `frameIndex`, `facing`, `rotation`, `flash`. Physics fields: `x, y, w, h, vx, vy, onGround`, and `gravityScale` (gravity multiplier, default 1; 0 floats). `noGrab = true` keeps players from picking it up (a boss).
 
 `id`, `kind` and `typeName` belong to the engine; don't set them.
 

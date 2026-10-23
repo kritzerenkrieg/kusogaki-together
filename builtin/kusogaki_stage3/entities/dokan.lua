@@ -8,7 +8,8 @@
 --     "target": { "x": 370, "y": 330 },              -- required
 --     "trigger": { "radius": 40, "x": 370, "y": 330 }, -- x/y default to target
 --                                                      radius 0: never fires (a pickup)
---     "blast": 20 }                                    -- optional kill radius
+--     "blast": 20,                                     -- optional kill radius
+--     "speed": 600 }                                   -- optional flight speed (px/s)
 local Dokan = setmetatable({}, { __index = Entity })
 Dokan.__index = Dokan
 
@@ -47,6 +48,7 @@ function Dokan.new(x, y, def)
     self.triggerY = trigger.y or self.targetY
     self.triggerRadius = trigger.radius or Dokan.triggerRadius
     self.blastRadius = def.blast or Dokan.blastRadius
+    self.speed = def.speed or Dokan.speed
     -- idle -> flying. Grabbed: carried, then thrown (live) or dud (dropped).
     self.state = "idle"
     self.timer = 0
@@ -109,12 +111,12 @@ function Dokan:update(delta, level)
         local dx, dy = self.targetX - self.x, self.targetY - self.y
         local distance = math.sqrt(dx * dx + dy * dy)
         self.rotation = aimAngle(self)
-        if distance <= Dokan.speed * delta then
+        if distance <= self.speed * delta then
             self.x, self.y = self.targetX, self.targetY
             self.detonated = true
             return
         end
-        self.vx, self.vy = dx / distance * Dokan.speed, dy / distance * Dokan.speed
+        self.vx, self.vy = dx / distance * self.speed, dy / distance * self.speed
         self:move(delta, level)
         if next(self.contacts) then
             self.detonated = true -- hit a wall, prop or enemy on the way

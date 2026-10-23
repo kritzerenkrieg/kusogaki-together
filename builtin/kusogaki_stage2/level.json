@@ -47,7 +47,7 @@
     {"type": "crumble", "x": 1128, "y": 286},
     {"type": "crumble", "x": 1144, "y": 286},
     {"type": "checkpoint", "x": 1232, "y": 262},
-    {"type": "dokan", "x": 1672, "y": -20, "target": {"x": 1672, "y": 126}, "trigger": {"radius": 24}, "blast": 24},
+    {"type": "dokan", "x": 1672, "y": -20, "target": {"x": 1672, "y": 126}, "trigger": {"radius": 24}, "blast": 24, "speed": 900},
     {"type": "spike", "x": 1912, "y": 270},
     {"type": "spike", "x": 1928, "y": 270},
     {"type": "spike", "x": 1944, "y": 270},
@@ -65,10 +65,10 @@
     {"type": "hidden_block", "x": 344, "y": 214},
     {"type": "hidden_block", "x": 360, "y": 214},
     {"type": "trap", "x": 872, "y": 246, "w": 16, "h": 64, "spawn": [{"type": "spike", "x": 912, "y": 270}, {"type": "spike", "x": 928, "y": 270}, {"type": "spike", "x": 944, "y": 270}], "time": 2},
-    {"type": "dokan", "x": 1232, "y": -30, "target": {"x": 1232, "y": 266}, "trigger": {"x": 1232, "y": 266, "radius": 16}, "blast": 24},
+    {"type": "dokan", "x": 1232, "y": -30, "target": {"x": 1232, "y": 266}, "trigger": {"x": 1232, "y": 266, "radius": 16}, "blast": 24, "speed": 900},
     {"type": "hidden_block", "x": 1528, "y": 150},
     {"type": "trap", "x": 2060, "y": 246, "w": 16, "h": 64, "spawn": [{"type": "spike", "x": 2104, "y": 270}, {"type": "spike", "x": 2120, "y": 270}], "time": 2},
     {"type": "crumble", "x": 2832, "y": 238},
-    {"type": "trap", "x": 3216, "y": 246, "w": 16, "h": 64, "spawn": [{"type": "dodon", "x": 3300, "y": 100}, {"type": "dodon", "x": 3340, "y": 100}, {"type": "dodon", "x": 3380, "y": 100}]}
+    {"type": "trap", "x": 3216, "y": 246, "w": 16, "h": 64, "spawn": [{"type": "dodon", "x": 3300, "y": 100}, {"type": "dodon", "x": 3340, "y": 100}, {"type": "dodon", "x": 3380, "y": 100}], "time": 2}
   ]
 }

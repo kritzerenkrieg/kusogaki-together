@@ -38,7 +38,7 @@ end
 
 -- ── Stages, spawning, gravity, finish ─────────────────────────────────────
 do
-    local level = Level.load("example")
+    local level = Level.load("kusogaki_stage1")
     level:addPlayer(playerModule.new(level.spawn.x, level.spawn.y))
     local names = {}
     for _, stage in ipairs(level.stages) do names[#names + 1] = stage.name end
@@ -51,7 +51,7 @@ do
     check("replaceStage returns the built-in rule", type(previous) == "function")
     check("removeStage takes a stage out", level:removeStage("mine") and not level:findStage("mine"))
     check("unknown stages are an error", not pcall(level.addStage, level, "x", function() end, { before = "nope" }))
-    local other = Level.load("example")
+    local other = Level.load("kusogaki_stage1")
     check("stage lists are per level", other:findStage("triggers") and other.stages[1] ~= level.stages[1])
 
     local firstId = level.nextId
@@ -76,7 +76,7 @@ do
     check("spawning an unknown type fails", not pcall(level.spawnEntity, level, "../evil", 0, 0))
     check("spawn placements must be plain data", not pcall(level.spawnEntity, level, "box", 0, 0, { f = print }))
 
-    local zeroG = Level.load("example")
+    local zeroG = Level.load("kusogaki_stage1")
     zeroG.gravity = 0
     local player = zeroG:addPlayer(playerModule.new(500, 100))
     for _ = 1, 30 do zeroG:update(1 / 60) end
@@ -96,7 +96,7 @@ end
 -- ── Camera ────────────────────────────────────────────────────────────────
 do
     local camera = require("core.graphics.camera")
-    local level = Level.load("example")
+    local level = Level.load("kusogaki_stage1")
     local player = level:addPlayer(playerModule.new(1000, 200))
     camera.frame(level)
     check("the camera follows the players (x) and stays inside the level (y)",
@@ -123,7 +123,7 @@ end
 do
     local camera = require("core.graphics.camera")
     local present = require("core.graphics.present")
-    local level = Level.load("example")
+    local level = Level.load("kusogaki_stage1")
     local mine = level:addPlayer(playerModule.new(1000, 200))
     local other = level:addPlayer(playerModule.new(2000, 200))
     camera.frame(level, { [mine.id] = true })
@@ -231,9 +231,9 @@ do
         live.finished and live.finished.message)
 end
 
--- ── Example level: goal zone and respawn counter (levels/example/scripts/goal.lua)
+-- ── Example level: goal zone and respawn counter (levels/kusogaki_stage1/scripts/goal.lua)
 do
-    local level = Level.load("example")
+    local level = Level.load("kusogaki_stage1")
     local p1 = level:addPlayer(playerModule.new(3128, 150)) -- top of the last stair
     local p2 = level:addPlayer(playerModule.new(3320, 260)) -- already in the zone
     local function step(frames)
@@ -263,7 +263,7 @@ do
         return count
     end
     local function cross(jumpAt)
-        local level = Level.load("example")
+        local level = Level.load("kusogaki_stage1")
         local player = level:addPlayer(playerModule.new(1872, 266))
         local spikesSeen, bridgeGone = false, false
         for _ = 1, 90 do
@@ -291,7 +291,7 @@ end
 
 -- ── Example level: the bricks over the spike pit swap with the spikes (scripts/swap.lua)
 do
-    local level = Level.load("example")
+    local level = Level.load("kusogaki_stage1")
     local function at(list, typeName, y)
         local count = 0
         for _, entity in ipairs(level[list]) do
@@ -301,35 +301,35 @@ do
         end
         return count
     end
-    check("the pit starts as bricks over spikes", at("blocks", "brick", 254) == 7 and at("hazards", "spike", 270) == 13)
+    check("the pit starts as bricks over spikes", at("blocks", "brick", 254) == 5 and at("hazards", "spike", 270) == 13)
     local player = level:addPlayer(playerModule.new(2050, 266)) -- clear of the dodon at 2184
     for _ = 1, 30 do
         player.input = {}
         level:update(1 / 60)
     end
     check("nothing swaps before a brick is touched", not level.net.swapped)
-    player.x, player.y, player.vx, player.vy = 2296, 234, 0, 0 -- standing on a brick
+    player.x, player.y, player.vx, player.vy = 2312, 234, 0, 0 -- standing on a brick
     for _ = 1, 10 do
         player.input = {}
         level:update(1 / 60)
     end
     check("touching a brick turns the bricks to spikes and the spikes to metal", level.net.swapped
-        and at("hazards", "spike", 254) == 7 and at("blocks", "metal", 270) == 13
+        and at("hazards", "spike", 254) == 5 and at("blocks", "metal", 270) == 13
         and at("blocks", "brick", 254) == 0 and at("hazards", "spike", 270) == 0)
     check("the brick it stood on is now a spike", player.dead)
     for _ = 1, 150 do
         player.input = {}
         level:update(1 / 60)
     end
-    check("it stays swapped after a respawn", not player.dead and at("hazards", "spike", 254) == 7)
+    check("it stays swapped after a respawn", not player.dead and at("hazards", "spike", 254) == 5)
 end
 
 -- ── kusogaki_stage2: music, no player HUD, crumbling blocks (scripts/parkour.lua)
 do
     local level = Level.load("kusogaki_stage2")
-    check("stage 2 plays level1 without the player HUD", level.music == "level1.flac" and not level.hud and Level.load("example").hud
+    check("stage 2 plays level1 without the player HUD", level.music == "level1.flac" and not level.hud and Level.load("kusogaki_stage1").hud
         and require("scenes.gameplay").musicFor(level) == "level1.flac")
-    check("levels without music get the default", require("scenes.gameplay").musicFor(Level.load("example")) == "playground.flac")
+    check("levels without music get the default", require("scenes.gameplay").musicFor(Level.load("kusogaki_stage1")) == "playground.flac")
     local function crumbles()
         local count = 0
         for _, block in ipairs(level.blocks) do
@@ -432,6 +432,11 @@ do
     end
     step(2)
     check("the king wakes and shows its bar", level.net.kingAwake and king.awake)
+    local function hurt() -- a thrown prop (or a blast) takes one health
+        player.x = 3300
+        king.killedBy = "kick"
+        level:update(1 / 60)
+    end
     local function stomp()
         player.dead = false
         player.x, player.y, player.vx, player.vy = king.x, king.y - king.h / 2 - player.h / 2 - 1, 0, 200
@@ -439,28 +444,53 @@ do
         for _ = 1, 3 do
             player.input = {}
             level:update(1 / 60)
-            if player.vy < 0 or king.removed then break end
+            if player.dead or king.removed then break end
         end
     end
     stomp()
-    check("a stomp takes one health and bounces", king.hp == 7 and not player.dead and player.vy < 0, king.hp)
-    stomp()
+    check("stomping the king takes no health and kills the player", king.hp == 8 and player.dead, king.hp)
+    player.dead = false
+    hurt()
+    check("a thrown prop takes one health", king.hp == 7 and not king.removed, king.hp)
+    hurt()
     check("it cannot be hurt right after a hit", king.hp == 7)
     check("it cannot be picked up", king.noGrab)
     step(70)
-    king.killedBy = "kick" -- what a thrown prop does to an enemy
-    level:update(1 / 60)
+    hurt()
     check("thrown props take one health instead of killing it", king.hp == 6 and not king.removed, king.hp)
     king.hp, king.hurt = 1, 0
     player.x = 3300
     step(1)
-    local minionsBefore = #level.enemies
-    king.hp = 4
-    king.onGround, king.wasAirborne = true, true
+    local function count(typeName)
+        local n = 0
+        for _, list in ipairs({ level.enemies, level.props }) do
+            for _, entity in ipairs(list) do
+                if entity.typeName == typeName then n = n + 1 end
+            end
+        end
+        return n
+    end
+    local boxes = count("fake_box")
+    level.net.boxTimer = 0
     step(1)
-    check("at half health its landings send dodons in", #level.enemies == minionsBefore + 1, #level.enemies)
+    check("the king drops a lit fake box from the sky", count("fake_box") == boxes + 1, count("fake_box"))
+    local box
+    for _, prop in ipairs(level.props) do
+        if prop.typeName == "fake_box" and prop.lit and prop.y < king.y - 200 then box = prop end
+    end
+    check("... already lit, above the player's side of the arena", box and box.lit and box.fuseLength == 2.5)
+    king.hp, king.hurt = 4, 0
+    local dambos = count("dambo")
+    level.net.damboTimer = 100
+    step(1)
+    local sky
+    for _, enemy in ipairs(level.enemies) do
+        if enemy.minion then sky = enemy end
+    end
+    check("at half health a dambo falls from the sky, far from the king", count("dambo") == dambos + 1
+        and sky and sky.y < king.y - 200 and math.abs(sky.x - king.x) >= 120, sky and sky.x)
     king.hp, king.hurt = 1, 0
-    stomp()
+    hurt()
     check("its health running out the first time only makes it play dead", not king.removed
         and king.fakeDead > 0 and king.hp == 0 and not level.finished)
     player.x, player.y, player.vx, player.vy = king.x + 4, king.y, 0, 0
@@ -470,7 +500,7 @@ do
     step(170)
     check("then it gets back up", king.fakeDead == 0 and king.hp == 4 and level.net.kingRevived, king.hp)
     king.hp, king.hurt = 1, 0
-    stomp()
+    hurt()
     check("the second time it is down for good", king.removed)
     for _ = 1, 120 do
         if level.finished then break end
@@ -478,6 +508,64 @@ do
         level:update(1 / 60)
     end
     check("beating the king wins", level.finished and level.finished.outcome == "win", level.finished and level.finished.message)
+end
+
+-- ── kusogaki_stage3: the dambo (entities/dambo.lua, scripts/guns.lua)
+do
+    -- A level with one dambo (the first one, on the ground) and a player `gap` px to its right.
+    local function setup(gap)
+        local level = Level.load("kusogaki_stage3")
+        local dambo
+        for i = #level.enemies, 1, -1 do
+            local enemy = level.enemies[i]
+            if enemy.typeName == "dambo" then
+                if enemy.x == 400 then dambo = enemy else level:removeEntity(enemy) end
+            end
+        end
+        local player = level:addPlayer(playerModule.new(dambo.x + gap, 266))
+        local seen = { muzzle = 0, impact = 0, bullet = 0 }
+        local function step(count, clear)
+            for _ = 1, count do
+                player.input = {}
+                level:update(1 / 60)
+                for i = #level.triggers, 1, -1 do -- bullets cleared: the first one would kill the player
+                    if clear and level.triggers[i].typeName == "bullet" then level:removeEntity(level.triggers[i]) end
+                end
+                for _, event in ipairs(level:takeEvents()) do
+                    if event.type == "muzzle" or event.type == "impact" then seen[event.type] = seen[event.type] + 1 end
+                    if event.type == "spawned" and event.typeName == "bullet" then seen.bullet = seen.bullet + 1 end
+                end
+            end
+        end
+        return level, dambo, player, step, seen
+    end
+
+    local _, dambo, player, step = setup(100)
+    step(30)
+    check("a dambo in range stands and faces the player", dambo.facing == 1 and not dambo.moving
+        and math.abs(player.x - dambo.x - 100) < 1, dambo.x)
+
+    local _, near, nearPlayer, nearStep = setup(40)
+    nearStep(30)
+    check("it backs away from a player that is too close", near.x < 400 - 10 and near.facing == 1, near.x)
+
+    local _, far, farPlayer, farStep = setup(190)
+    farStep(30)
+    check("it walks toward a player that is far", far.x > 400 + 10, far.x)
+
+    local _, shooter, _, shooterStep, seen = setup(110)
+    shooterStep(130, true)
+    check("it fires about once a second, each shot with a muzzle flash", seen.bullet >= 2 and seen.bullet <= 3
+        and seen.muzzle == seen.bullet, seen.bullet .. "/" .. seen.muzzle)
+
+    local blockedLevel, _, shielded, shieldedStep, blocked = setup(110)
+    blockedLevel:spawnEntity("box", 460, 270) -- between the dambo (400) and the player (510)
+    shieldedStep(60)
+    check("a bullet is gone when it hits a box", not shielded.dead and blocked.impact >= 1, tostring(shielded.dead))
+
+    local _, _, victim, victimStep, hit = setup(110)
+    victimStep(60)
+    check("a bullet kills the player it reaches, with sparks", victim.dead and hit.impact == 1, tostring(victim.dead))
 end
 
 -- The walk cycle uses all four frames of its row: 2, 3, 4, 1.

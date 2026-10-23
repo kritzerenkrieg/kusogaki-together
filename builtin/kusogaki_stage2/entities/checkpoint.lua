@@ -8,7 +8,7 @@ Checkpoint.__index = Checkpoint
 
 Checkpoint.name = "checkpoint"
 Checkpoint.kind = "trigger"  -- not solid; reacts to players walking through it
-Checkpoint.assetPath = "assets/graphics/entities/checkpoint.png" -- 2 frames: 1 flag down, 2 flag up
+Checkpoint.assetPath = "assets/checkpoint.png" -- 2 frames: 1 flag down, 2 flag up
 Checkpoint.w, Checkpoint.h = 16, 32 -- one frame; place it with its bottom on the ground
 Checkpoint.image = nil
 Checkpoint.frames = nil

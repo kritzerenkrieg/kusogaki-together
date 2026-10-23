@@ -39,6 +39,18 @@ local HANDLERS = {
         fx.debris(event.x, event.y, event.w, event.h, image(event), level.statics, region(event))
         audio.playSfx("debris.wav")
     end,
+    -- A gun fired (Entity:muzzleFlash): a flash at the muzzle.
+    muzzle = function(event)
+        if type(event.x) == "number" and type(event.y) == "number" then
+            fx.muzzleFlash(event.x, event.y, event.dir == -1 and -1 or 1)
+        end
+    end,
+    -- A bullet hit something (Entity:bulletImpact): sparks.
+    impact = function(event)
+        if type(event.x) == "number" and type(event.y) == "number" then
+            fx.bulletImpact(event.x, event.y, event.dir == -1 and -1 or 1)
+        end
+    end,
     -- An enemy died: squashed by a stomp, or thrown away by a kick, hit or blast.
     corpse = function(event)
         if event.cause == "stomp" then

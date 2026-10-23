@@ -148,7 +148,7 @@ Level-wide behavior that is not an entity (tutorials, signs, level events) is a 
 
 The hooks and their arguments are listed in `MODDING.md` (Level scripts). Engine side: `stages.callHooks(level, name, ...)` calls them in `level.json` order. `load` runs at the end of `Level.load` (a failure fails the load). `playerJoined` runs from `level:addPlayer` under `level:protect`. `update` is the `scripts` stage. `message` runs during event presentation. The draw hooks run inside the scene's protected draw. Scripts have no `love`; `ui` (`core/level/ui.lua`, a read-only view) is their drawing surface, and entities get it as `entity:draw(ui)`.
 
-The example level's controls bar is `levels/example/scripts/tutorial.lua`.
+The example level's controls bar is `levels/kusogaki_stage1/scripts/tutorial.lua`.
 
 ### Entity helpers for scripts
 
@@ -288,5 +288,5 @@ Entity events also carry `entity`, the object itself, for local presentation (im
 - **Network play:** `love2d . --host` opens a session (UDP port 26967); `love2d . --join <ip[:port]>` joins one. Player ids are stable for the session (`level:addPlayer(player, id)`), so a remote player keeps its id across restarts; remote players are in `level.players` but not in the slots; clients send their inputs every tick and the host sends its whole state 20 times a second (hybrid rollback, `core/net/inputsync.lua`, `core/net/statesync.lua`). A client waits for the host's welcome and first state before it plays. ESC to the main menu ends the session. Internet play (Phase 3): Multiplayer in the title menu lists the public rooms and creates them (`scenes/lobby.lua`); a session starts in the waiting room (`scenes/room.lua`), where the host picks the level and starts it. `--host --online` opens a room on our rendezvous server (`server/`, Go) that plays at once and `--code <6 digits>` joins one; play stays peer to peer, through the server's relay only when punching fails or the host chose Relay only (`--relay-only`). Design and status: `NETWORKING.md`, `DEVELOPMENT_PHASE.md`.
 - **Restart seed:** this machine is the host and the source of truth (`NETWORKING.md`, Source of truth). It picks each (re)start's seed, queues a `restart{seed}` session message (`gameplay.takeOutbox`) and restarts through `gameplay.restart(seed)`, the same call a client makes on that message; it refuses anything but a whole number in 1..2147483646. The level keeps its seed as `level.seed`.
 - **Respawn count:** `player.respawns` counts respawns (`core/player/state.lua`). A restart carries each slot's count to its new player; winning (`level:finish("win")`) resets every count (`gameplay.resetRespawns`).
-- `love2d . --level <name>` plays `levels/<name>` from the save directory (default `example`).
+- `love2d . --level <name>` plays `levels/<name>` from the save directory (default `kusogaki_stage1`).
 

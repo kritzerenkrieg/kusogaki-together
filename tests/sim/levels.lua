@@ -10,9 +10,9 @@ local levels = require("core.levels")
 -- ── Built-in levels are copied into the save directory ───────────────────
 do
     check("the built-in levels are in the save directory",
-        love.filesystem.getRealDirectory("levels/example/level.json") == love.filesystem.getSaveDirectory()
+        love.filesystem.getRealDirectory("levels/kusogaki_stage1/level.json") == love.filesystem.getSaveDirectory()
         and love.filesystem.getInfo("levels/topdown/level.json") ~= nil)
-    check("... as exact copies", levelpack.fingerprint("levels/example") == levelpack.fingerprint("builtin/example"))
+    check("... as exact copies", levelpack.fingerprint("levels/kusogaki_stage1") == levelpack.fingerprint("builtin/kusogaki_stage1"))
     check("the game itself has no levels/ folder", love.filesystem.getRealDirectory("levels") ==
         love.filesystem.getSaveDirectory())
 
@@ -94,11 +94,11 @@ do
     check("my levels draw", pcall(scene.draw))
     local index
     for i, item in ipairs(state.items) do
-        if item.entry and item.entry.root == "levels/example" then index = i end
+        if item.entry and item.entry.root == "levels/kusogaki_stage1" then index = i end
     end
     for _ = 2, index or 1 do scene.keypressed("down") end
     check("Enter plays the selected level alone", scene.keypressed("return") == "gameplay"
-        and gameplay.getLevel() and gameplay.getLevel().root == "levels/example" and gameplay.getMode() == nil)
+        and gameplay.getLevel() and gameplay.getLevel().root == "levels/kusogaki_stage1" and gameplay.getMode() == nil)
     scene.open()
     for i, item in ipairs(scene.state().items) do
         if item.entry and item.entry.root == "levels/packtest" then index = i end

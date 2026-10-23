@@ -39,14 +39,14 @@ do
         and refused({ t = "restart", seed = 5, generation = 1, players = { 1, 1 } })
         and refused({ t = "hello", protocol = 9, game = "x", name = "new\nline" })
         and refused({ t = "has", fp = "abc" })
-        and refused({ t = "room", name = "r", code = "12345", level = "example", fp = ("ab"):rep(32), st = "waiting",
+        and refused({ t = "room", name = "r", code = "12345", level = "kusogaki_stage1", fp = ("ab"):rep(32), st = "waiting",
             cd = 0, di = true, pub = true, relay = false, players = {} })
-        and refused({ t = "room", name = "r", code = "", level = "example", fp = ("ab"):rep(32), st = "waiting",
+        and refused({ t = "room", name = "r", code = "", level = "kusogaki_stage1", fp = ("ab"):rep(32), st = "waiting",
             cd = 0, di = true, pub = true, relay = false, players = { { id = 1, name = "a", has = "yes" } } }))
     check("room messages decode", protocol.decode(protocol.encode({ t = "room", name = "Bob's room", code = "123456",
-        level = "example", fp = ("ab"):rep(32), st = "countdown", cd = 3, di = false, pub = true, relay = true,
+        level = "kusogaki_stage1", fp = ("ab"):rep(32), st = "countdown", cd = 3, di = false, pub = true, relay = true,
         players = { { id = 1, name = "Bob", has = true }, { id = 2, name = "Al", has = false } } }), 1000) ~= nil
-        and protocol.decode(protocol.encode({ t = "start", level = "example", fp = ("ab"):rep(32), seed = 4,
+        and protocol.decode(protocol.encode({ t = "start", level = "kusogaki_stage1", fp = ("ab"):rep(32), seed = 4,
         generation = 2, players = { 1, 2 } }), 1000) ~= nil)
     check("garbage bytes are refused", protocol.decode("\7\255\255\255\255", 100) == nil
         and protocol.decode(("x"):rep(2000), 1024) == nil)
@@ -69,9 +69,9 @@ end
 
 -- ── Level fingerprints ───────────────────────────────────────────────────
 do
-    local a, b = levelpack.fingerprint("levels/example"), levelpack.fingerprint("levels/example")
+    local a, b = levelpack.fingerprint("levels/kusogaki_stage1"), levelpack.fingerprint("levels/kusogaki_stage1")
     check("a level's fingerprint is stable", a == b and #a == 64)
-    check("... and the same as the built-in level it was copied from", a == levelpack.fingerprint("builtin/example"))
+    check("... and the same as the built-in level it was copied from", a == levelpack.fingerprint("builtin/kusogaki_stage1"))
     check("different levels differ", a ~= levelpack.fingerprint("levels/topdown"))
     check("a download's fingerprint is its id", levelpack.fingerprint("downloads/" .. ("ab"):rep(32))
         == ("ab"):rep(32))
@@ -79,9 +79,9 @@ end
 
 -- ── Host and clients ──────────────────────────────────────────────────────
 do
-    local level = Level.load("example", { seed = 4242 })
+    local level = Level.load("kusogaki_stage1", { seed = 4242 })
     level:addPlayer(playerModule.new(100, 100))
-    local fingerprint = levelpack.fingerprint("levels/example")
+    local fingerprint = levelpack.fingerprint("levels/kusogaki_stage1")
     local generation = 3
     local left, names, has = {}, {}, {}
     local host = assert(session.host({
@@ -185,7 +185,7 @@ end
 
 -- ── The bad network simulator ────────────────────────────────────────────
 do
-    local level = Level.load("example", { seed = 4 })
+    local level = Level.load("kusogaki_stage1", { seed = 4 })
     level:addPlayer(playerModule.new(100, 100))
     local votes, states = {}, 0
     local host = assert(session.host({
@@ -281,7 +281,7 @@ end
 -- ── Host state to clients (core/net/statesync.lua) ──────────────────────
 do
     local function newLevel()
-        local level = Level.load("example", { seed = 5 })
+        local level = Level.load("kusogaki_stage1", { seed = 5 })
         level:addPlayer(playerModule.new(level.spawn.x, level.spawn.y))
         level:addPlayer(playerModule.new(level.spawn.x + 20, level.spawn.y))
         return level
@@ -340,7 +340,7 @@ end
 -- ── The gameplay scene as host, with a client over localhost ─────────────
 do
     local gameplay = require("scenes.gameplay")
-    gameplay.configure({ mode = "host", port = PORT + 1, bind = "127.0.0.1", level = "example" })
+    gameplay.configure({ mode = "host", port = PORT + 1, bind = "127.0.0.1", level = "kusogaki_stage1" })
     gameplay.load()
     check("the scene hosts a session", gameplay.getNetwork() ~= nil)
     gameplay.setSource(1, { read = function() return {} end })
@@ -371,7 +371,7 @@ do
     end
     run(400, function() return got.start ~= nil and #got.snaps > 0 end)
     check("--host plays at once: a joining client drops in", got.room and got.room.st == "playing"
-        and got.start and got.start.level == "example" and #got.start.players == 2, tostring(got.closed))
+        and got.start and got.start.level == "kusogaki_stage1" and #got.start.players == 2, tostring(got.closed))
     check("a joined client gets the host's full state", got.snaps[1] and got.snaps[1].base == 0
         and #got.snaps[1].set > 100, tostring(got.closed))
     local level = gameplay.getLevel()
@@ -425,7 +425,7 @@ end
 -- ── The waiting room: level choice, the countdown, starting, back to the room ─
 do
     local gameplay = require("scenes.gameplay")
-    gameplay.configure({ mode = "host", port = PORT + 3, bind = "127.0.0.1", level = "example", name = "Hosty",
+    gameplay.configure({ mode = "host", port = PORT + 3, bind = "127.0.0.1", level = "kusogaki_stage1", name = "Hosty",
         room = { name = "Test room", dropIn = false, public = true } })
     gameplay.load()
     check("a room host waits in the room", gameplay.getLevel() == nil and gameplay.getNetwork() ~= nil)
@@ -470,17 +470,17 @@ do
     roomScene.keypressed("left")
     local room = ann.room
     check("the room reaches a joining player: name, level, players and their names", room
-        and room.name == "Test room" and room.level == "example" and room.st == "waiting" and not room.di
+        and room.name == "Test room" and room.level == "kusogaki_stage1" and room.st == "waiting" and not room.di
         and room.players[1].name == "Hosty" and room.players[2].name == "Ann" and room.players[2].has,
         room and (room.name .. " " .. room.st))
 
     gameplay.roomAction("level", 1)
-    run(300, function() return ann.room.level ~= "example" and ann.room.players[2].has end)
+    run(300, function() return ann.room.level ~= "kusogaki_stage1" and ann.room.players[2].has end)
     check("the host changes the level; players say whether they have it", ann.room.level == "kusogaki_stage2"
         and ann.room.players[2].has)
     gameplay.roomAction("level", -1)
     missing = true
-    run(300, function() return ann.room.level == "example" and not ann.room.players[2].has end)
+    run(300, function() return ann.room.level == "kusogaki_stage1" and not ann.room.players[2].has end)
     local ok, reason = gameplay.roomAction("start")
     check("no start while someone lacks the level", not ok and reason ~= nil and not ann.room.players[2].has)
     missing = false
@@ -497,7 +497,7 @@ do
     run(400, function() return ann.start ~= nil end)
     local level = gameplay.getLevel()
     check("at the end of the countdown everyone plays the room's level", ann.start and level
-        and ann.start.level == "example" and #ann.start.players == 2 and #level.players == 2)
+        and ann.start.level == "kusogaki_stage1" and #ann.start.players == 2 and #level.players == 2)
 
     local bob = newClient("Bob")
     clients[2] = bob

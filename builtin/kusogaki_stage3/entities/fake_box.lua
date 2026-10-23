@@ -1,6 +1,7 @@
 -- Entity type script: "fake_box", a bomb that looks exactly like a box. Grabbing
 -- it lights the fuse: it beeps faster and faster, flashing white on each beep,
--- and explodes after `fuse` seconds, held or not. Runs in the sandbox; the base
+-- and explodes after `fuse` seconds, held or not. A placement can have it lit
+-- from the start: { "lit": true, "fuse": 2.5 }. Runs in the sandbox; the base
 -- classes Entity and Prop are injected by core/level/loader.lua.
 local FakeBox = setmetatable({}, { __index = Prop })
 FakeBox.__index = FakeBox
@@ -23,14 +24,16 @@ function FakeBox.load()
     return FakeBox.image
 end
 
-function FakeBox.new(x, y)
+function FakeBox.new(x, y, def)
+    def = def or {}
     local self = Prop.create(FakeBox, x, y, {
         name = FakeBox.name,
         image = FakeBox.image,
         w = FakeBox.w,
         h = FakeBox.h,
     })
-    self.lit = false
+    self.lit = def.lit == true -- already ticking
+    self.fuseLength = def.fuse or FakeBox.fuse
     self.fuseTime = 0
     self.nextBeep = 0
     self.blastRadius = FakeBox.blastRadius
@@ -47,11 +50,11 @@ function FakeBox:update(delta, level)
         if self.fuseTime >= self.nextBeep then
             self:playSfx("beep.wav")
             self.flash = 1
-            local progress = math.min(self.fuseTime / FakeBox.fuse, 1)
+            local progress = math.min(self.fuseTime / self.fuseLength, 1)
             self.nextBeep = self.fuseTime + FakeBox.firstBeep
                 + (FakeBox.lastBeep - FakeBox.firstBeep) * progress
         end
-        if self.fuseTime >= FakeBox.fuse then
+        if self.fuseTime >= self.fuseLength then
             self.detonated = true
         end
     end

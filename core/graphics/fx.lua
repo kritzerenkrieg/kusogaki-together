@@ -188,6 +188,7 @@ function fx.update(dt)
     fx.updateDebris(dt)
     fx.updateExplosions(dt)
     fx.updateCorpses(dt)
+    fx.updateShots(dt)
 end
 
 -- Draw the current transition overlay across the screen if it is visible.
@@ -565,6 +566,90 @@ function fx.drawCorpses()
     end
 end
 
+-- Muzzle flash and bullet impact: a flash is a short burst of light in front
+-- of a gun; sparks fly forward from it, and back from where a bullet hits.
+local MUZZLE_LIFE = 0.09    -- seconds a flash lasts
+local SPARK_GRAVITY = 420   -- px/s^2 on sparks
+local flashes = {}
+local sparks = {}
+
+local function addSpark(x, y, vx, vy, life, size)
+    sparks[#sparks + 1] = { x = x, y = y, vx = vx, vy = vy, life = 0, maxLife = life, size = size }
+end
+
+-- A flash at (x, y), the muzzle, firing toward dir (1 right, -1 left).
+function fx.muzzleFlash(x, y, dir)
+    dir = dir < 0 and -1 or 1
+    flashes[#flashes + 1] = { x = x, y = y, dir = dir, life = 0, size = 0.85 + love.math.random() * 0.4 }
+    for _ = 1, 4 do
+        addSpark(x, y, dir * (110 + love.math.random() * 150), (love.math.random() - 0.5) * 110,
+            0.12 + love.math.random() * 0.1, 1)
+    end
+end
+
+-- A bullet that was flying toward dir stopped at (x, y).
+function fx.bulletImpact(x, y, dir)
+    dir = dir < 0 and -1 or 1
+    for _ = 1, 7 do
+        addSpark(x, y, -dir * (30 + love.math.random() * 130), -30 - love.math.random() * 120,
+            0.2 + love.math.random() * 0.15, love.math.random() < 0.3 and 2 or 1)
+    end
+end
+
+function fx.updateShots(dt)
+    for i = #flashes, 1, -1 do
+        flashes[i].life = flashes[i].life + dt
+        if flashes[i].life >= MUZZLE_LIFE then
+            table.remove(flashes, i)
+        end
+    end
+    for i = #sparks, 1, -1 do
+        local spark = sparks[i]
+        spark.life = spark.life + dt
+        if spark.life >= spark.maxLife then
+            table.remove(sparks, i)
+        else
+            spark.vy = spark.vy + SPARK_GRAVITY * dt
+            spark.x = spark.x + spark.vx * dt
+            spark.y = spark.y + spark.vy * dt
+        end
+    end
+end
+
+-- Draw flashes and sparks in world space. A flash lights its surroundings: a
+-- soft glow added over the picture (additive blending), brightest at the muzzle.
+local GLOW_RADIUS = 38
+local GLOW_STEPS = 7
+
+function fx.drawShots()
+    love.graphics.setBlendMode("add")
+    for _, flash in ipairs(flashes) do
+        local fade = 1 - flash.life / MUZZLE_LIFE
+        local x, y = flash.x + flash.dir * 4, flash.y
+        for step = GLOW_STEPS, 1, -1 do
+            local radius = GLOW_RADIUS * flash.size * (0.5 + 0.5 * fade) * step / GLOW_STEPS
+            love.graphics.setColor(1, 0.78, 0.38, 0.11 * fade)
+            love.graphics.circle("fill", x, y, radius)
+        end
+        love.graphics.setColor(1, 0.95, 0.75, 0.9 * fade)
+        love.graphics.circle("fill", flash.x, flash.y, 5 * flash.size * fade + 1)
+    end
+    love.graphics.setBlendMode("alpha")
+    for _, flash in ipairs(flashes) do
+        local fade = 1 - flash.life / MUZZLE_LIFE
+        local k, d, x, y = flash.size * (0.6 + 0.4 * fade), flash.dir, flash.x, flash.y
+        love.graphics.setColor(1, 0.95, 0.65, 0.9 * fade)
+        love.graphics.polygon("fill", x, y - 2 * k, x + d * 11 * k, y, x, y + 2 * k)
+        love.graphics.setColor(1, 1, 1, fade)
+        love.graphics.circle("fill", x, y, 2 * k)
+    end
+    for _, spark in ipairs(sparks) do
+        local fade = 1 - spark.life / spark.maxLife
+        love.graphics.setColor(1, 0.85, 0.35, fade)
+        love.graphics.rectangle("fill", spark.x - spark.size / 2, spark.y - spark.size / 2, spark.size, spark.size)
+    end
+end
+
 -- Drop all debris, explosions and corpses, e.g. when the level is rebuilt.
 -- `level` (optional) gives the gravity chips and corpses fall with.
 function fx.clearEffects(level)
@@ -572,6 +657,8 @@ function fx.clearEffects(level)
     debris = {}
     explosions = {}
     corpses = {}
+    flashes = {}
+    sparks = {}
 end
 
 return fx

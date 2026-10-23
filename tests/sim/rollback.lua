@@ -25,7 +25,7 @@ local function inputFor(id, t)
 end
 
 local function newLevel()
-    local level = Level.load("example", { seed = 7 })
+    local level = Level.load("kusogaki_stage1", { seed = 7 })
     for i = 1, 3 do
         level:addPlayer(playerModule.new(level.spawn.x + i * 20, level.spawn.y))
     end

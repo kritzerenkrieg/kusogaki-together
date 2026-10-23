@@ -13,7 +13,7 @@ local EVEN = helpers.EVEN
 -- ── Wire format: snapshots and events survive encoding exactly ──────────
 do
     local wire = require("core.wire")
-    local level = Level.load("example")
+    local level = Level.load("kusogaki_stage1")
     level:addPlayer(playerModule.new(level.spawn.x, level.spawn.y))
     level:addPlayer(playerModule.new(level.spawn.x + 20, level.spawn.y))
     local list = {}
@@ -70,27 +70,27 @@ do
     local loader = require("core.level.loader")
     local IMAGES = { png = true, jpg = true, jpeg = true }
     local function resolves(path)
-        local ok, result = pcall(loader.resolveAsset, "levels/example", path, IMAGES)
+        local ok, result = pcall(loader.resolveAsset, "levels/kusogaki_stage1", path, IMAGES)
         return ok and result
     end
-    check("package assets resolve inside the package", resolves("assets/box.png") == "levels/example/assets/box.png")
+    check("package assets resolve inside the package", resolves("assets/box.png") == "levels/kusogaki_stage1/assets/box.png")
     check("shared engine graphics resolve", resolves("assets/graphics/entities/spike.png") == "assets/graphics/entities/spike.png")
-    check("parent paths are refused", not resolves("../example/assets/box.png") and not resolves("assets/../level.json"))
+    check("parent paths are refused", not resolves("../kusogaki_stage1/assets/box.png") and not resolves("assets/../level.json"))
     check("absolute paths are refused", not resolves("/etc/passwd"))
     check("other file types are refused", not resolves("entities/box.lua"))
     check("missing assets are refused", not resolves("assets/nope.png"))
     check("engine files outside shared graphics are refused", not resolves("assets/audio/sfx/hit.png"))
-    check("level names and roots map to roots", loader.rootFor("example") == "levels/example"
+    check("level names and roots map to roots", loader.rootFor("kusogaki_stage1") == "levels/kusogaki_stage1"
         and loader.rootFor("downloads/" .. string.rep("a", 64)) == "downloads/" .. string.rep("a", 64)
-        and loader.rootFor("builtin/example") == "builtin/example"
+        and loader.rootFor("builtin/kusogaki_stage1") == "builtin/kusogaki_stage1"
         and not pcall(loader.rootFor, "levels/../x") and not pcall(loader.rootFor, "../x")
         and not pcall(loader.rootFor, "online/" .. string.rep("a", 64)))
 end
 
 -- ── Seeded level random ──────────────────────────────────────────────────
 do
-    local a, b = Level.load("example", { seed = 7 }), Level.load("example", { seed = 7 })
-    local c = Level.load("example", { seed = 8 })
+    local a, b = Level.load("kusogaki_stage1", { seed = 7 }), Level.load("kusogaki_stage1", { seed = 7 })
+    local c = Level.load("kusogaki_stage1", { seed = 8 })
     local x, y, z = a.random:random(), b.random:random(), c.random:random()
     check("a level's random follows its seed", x == y and x ~= z)
 end
@@ -99,7 +99,7 @@ end
 do
     local levelpack = require("core.levelpack")
     local levels = require("core.levels")
-    local package = levelpack.pack("builtin/example")
+    local package = levelpack.pack("builtin/kusogaki_stage1")
     local id = levelpack.sha256(package)
     levels.remove("downloads/" .. id)
     local root = levels.install(id, package)

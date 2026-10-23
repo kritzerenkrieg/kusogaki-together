@@ -117,7 +117,7 @@ end
 local function newHost(port, relayOnly)
     return assert(session.host({
         port = port, bind = BIND,
-        level = { name = "example", fingerprint = ("ab"):rep(32) },
+        level = { name = "kusogaki_stage1", fingerprint = ("ab"):rep(32) },
         rendezvous = { server = SERVER, relayOnly = relayOnly },
         handler = {
             accept = function() return 2 end,
@@ -218,9 +218,9 @@ do
     local hidden = newHost(PORT + 3)
     local code = openRoom(host)
     openRoom(hidden)
-    host:setRoomInfo({ players = 2, playing = true, dropIn = false, public = true, level = "example",
+    host:setRoomInfo({ players = 2, playing = true, dropIn = false, public = true, level = "kusogaki_stage1",
         name = "  Friday\n night " })
-    hidden:setRoomInfo({ players = 1, playing = false, dropIn = true, public = false, level = "example", name = "Secret" })
+    hidden:setRoomInfo({ players = 1, playing = false, dropIn = true, public = false, level = "kusogaki_stage1", name = "Secret" })
     local browser = assert(rendezvous.browse(SERVER, version.PROTOCOL))
     local found
     local deadline = love.timer.getTime() + 3
@@ -234,7 +234,7 @@ do
         love.timer.sleep(0.01)
     end
     check("the room list shows a public room's name, level, players and state", found and found.players == 2
-        and found.level == "example" and found.playing and not found.dropIn and not found.relay)
+        and found.level == "kusogaki_stage1" and found.playing and not found.dropIn and not found.relay)
     local listed = false
     for _, entry in ipairs(browser.rooms) do
         if entry.name == "Secret" then listed = true end

@@ -72,7 +72,7 @@ end
 
 -- The bundled level survives a round trip.
 do
-    local file = io.open("builtin/example/level.json")
+    local file = io.open("builtin/kusogaki_stage1/level.json")
     local data = json.decode(file:read("*a"))
     file:close()
     check("level.json round trips", deepEqual(json.decode(json.encode(data)), data))

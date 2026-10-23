@@ -9,7 +9,7 @@ local check = helpers.check
 -- Two (or three) players standing side by side on the example level's ground,
 -- player 1 on the left, facing right.
 local function setup(count)
-    local level = Level.load("example")
+    local level = Level.load("kusogaki_stage1")
     for i = 1, count or 2 do
         level:addPlayer(playerModule.new(90 + (i - 1) * 18, 250))
     end

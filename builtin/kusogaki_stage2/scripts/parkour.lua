@@ -14,7 +14,7 @@ function parkour.update(delta, level)
     for i = #level.blocks, 1, -1 do
         local block = level.blocks[i]
         if block.typeName == "crumble" and block.fuse == 0 then
-            block:playSfx("debris.wav")
+            block:breakApart() -- debris chips and the sound
             level:removeEntity(block)
             net.crumbled[#net.crumbled + 1] = { x = block.x, y = block.y, time = RETURN_TIME }
         end

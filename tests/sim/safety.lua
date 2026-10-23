@@ -19,9 +19,9 @@ do
             spin = function() while true do end end,
             trap = setmetatable({}, { __index = function() while true do end end }),
         }
-    ]], "levels/example/scripts/evil_test.lua")
+    ]], "levels/kusogaki_stage1/scripts/evil_test.lua")
 
-    local level = Level.load("example")
+    local level = Level.load("kusogaki_stage1")
     level:addPlayer(playerModule.new(level.spawn.x, level.spawn.y))
     level.props[1].update = evil.spin -- stored on an entity: no guard around it
     local started = os.clock()
@@ -31,7 +31,7 @@ do
     check("... quickly", os.clock() - started < 5, os.clock() - started)
     check("a faulted level stops updating", level:update(1 / 60) == false)
 
-    local level2 = Level.load("example")
+    local level2 = Level.load("kusogaki_stage1")
     level2:addPlayer(playerModule.new(level2.spawn.x, level2.spawn.y))
     level2:update(1 / 60)
     level2:takeEvents()
@@ -41,7 +41,7 @@ do
     check("a fake event with a runaway entity faults the level",
         tostring(level2.faulted):find("instructions"), level2.faulted)
 
-    local level3 = Level.load("example")
+    local level3 = Level.load("kusogaki_stage1")
     level3:addPlayer(playerModule.new(level3.spawn.x, level3.spawn.y))
     table.insert(level3.events, { type = "sfx", name = "../../../conf.lua" })
     level3:protect(present.all, level3:takeEvents(), level3)
@@ -54,7 +54,7 @@ end
 -- could: table fields, metatables it may read, and lookups through protected
 -- metatables. Fails on engine modules, dangerous built-ins and functions from
 -- modules scripts must never reach.
-for _, case in ipairs({ { "example", inputAt }, { "topdown", topdownInput },
+for _, case in ipairs({ { "kusogaki_stage1", inputAt }, { "topdown", topdownInput },
     { "kusogaki_stage2", inputAt }, { "kusogaki_stage3", inputAt } }) do
     local script = require("core.script")
     local loader = require("core.level.loader")
@@ -289,11 +289,11 @@ do
     check("a blocked level is refused before installing", installed == nil and tostring(installErr):find("blocked"),
         installErr)
 
-    watchdog.enter("levels/example")
+    watchdog.enter("levels/kusogaki_stage1")
     wait(0.9, false)
     out:pop()
     local localReport = watchdog.readReport()
-    check("a frozen level of the player's is reported but not blocked", localReport and localReport.root == "levels/example"
+    check("a frozen level of the player's is reported but not blocked", localReport and localReport.root == "levels/kusogaki_stage1"
         and not localReport.blocked)
     watchdog.stop()
     love.filesystem.remove(watchdog.REPORT_FILE)

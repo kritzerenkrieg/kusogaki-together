@@ -77,7 +77,7 @@ Scripts get these directly on the level (reference: `MODDING.md`):
 Not lethal. A kick knocks back; grab carries; kick while carrying throws; a carried player cannot get away (by design) until dropped, thrown, or someone dies. Rules in `ARCHITECTURE.md` (Physics rules); checks in `tests/sim/players.lua`.
 
 ### Goal zone, respawn count, restart vote (done)
-- Example level: `levels/example/scripts/goal.lua` highlights a zone past the flag pole; the level is won when every player is alive inside it.
+- Example level: `levels/kusogaki_stage1/scripts/goal.lua` highlights a zone past the flag pole; the level is won when every player is alive inside it.
 - `player.respawns` survives restarts and resets on a win. Restarting is a toggleable vote (more than half, then a 5 s countdown). See `ARCHITECTURE.md` (Local players); checks in `tests/sim/scene.lua` and `tests/sim/features.lua`.
 
 ### Phase 1 leftovers for network play (done)

@@ -27,8 +27,8 @@ end
 -- ── Entity ids at load ────────────────────────────────────────────────────
 do
     local json = require("core.json")
-    local placements = json.decode(love.filesystem.read("levels/example/level.json")).entities
-    local a, b = Level.load("example"), Level.load("example")
+    local placements = json.decode(love.filesystem.read("levels/kusogaki_stage1/level.json")).entities
+    local a, b = Level.load("kusogaki_stage1"), Level.load("kusogaki_stage1")
     local sameIds, matchTypes = true, true
     for index = 1, #placements do
         local entityA, entityB = a:get(index), b:get(index)

@@ -98,6 +98,22 @@ end
 -- only plain "name.wav|ogg|mp3" names are allowed.
 local SFX_EXTENSIONS = { wav = true, ogg = true, mp3 = true }
 
+-- Breaks into debris chips (with the sound) on every machine, as a kicked brick
+-- does; the caller removes the entity.
+function Entity:breakApart()
+    events.entity("debris", self)
+end
+
+-- A muzzle flash at (x, y) firing toward dir (1 or -1), on every machine.
+function Entity:muzzleFlash(x, y, dir)
+    events.entity("muzzle", self, { x = x, y = y, dir = dir == -1 and -1 or 1 })
+end
+
+-- Sparks where this entity (a bullet flying toward dir) hit something.
+function Entity:bulletImpact(dir)
+    events.entity("impact", self, { dir = dir == -1 and -1 or 1 })
+end
+
 function Entity:playSfx(name)
     local extension = type(name) == "string" and name:match("^[%w_]+%.(%w+)$")
     if extension and SFX_EXTENSIONS[extension] then

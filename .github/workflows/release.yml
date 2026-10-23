@@ -1,0 +1,62 @@
+name: Release
+
+# Push a tag like v0.4.3 (it must match GAME in core/version.lua) to build the
+# Windows, macOS and Linux packages and publish them as a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y p7zip-full
+
+      - name: Read game version
+        id: version
+        run: echo "version=$(sed -n 's/.*GAME = "\(.*\)".*/\1/p' core/version.lua)" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag matches the game version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          [ "${GITHUB_REF_NAME}" = "v${{ steps.version.outputs.version }}" ] \
+            || { echo "tag ${GITHUB_REF_NAME} does not match core/version.lua (${{ steps.version.outputs.version }})"; exit 1; }
+
+      - name: Cache LÖVE downloads
+        uses: actions/cache@v4
+        with:
+          path: build/cache
+          key: love-11.5-appimagetool-1.9.0
+
+      - name: Build packages
+        run: sh build/build.sh
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=${{ steps.version.outputs.version }}
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Kusogaki Together $V" \
+            --generate-notes \
+            "build/dist/kusogaki-together-$V-windows.zip" \
+            "build/dist/kusogaki-together-$V-macos.zip" \
+            "build/dist/kusogaki-together-$V-linux-x86_64.AppImage" \
+            build/dist/PLAYTEST.txt
+
+      - name: Keep packages as an artifact (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kusogaki-together-${{ steps.version.outputs.version }}
+          path: |
+            build/dist/kusogaki-together-${{ steps.version.outputs.version }}-*
+            build/dist/PLAYTEST.txt

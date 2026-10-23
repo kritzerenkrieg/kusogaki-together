@@ -5,7 +5,7 @@ Spike.__index = Spike
 
 Spike.name = "spike"
 Spike.kind = "hazard" -- "prop": dynamic body; "hazard": static, hurts on touch
-Spike.assetPath = "assets/graphics/entities/spike.png"
+Spike.assetPath = "assets/spike.png"
 Spike.w, Spike.h = 16, 15 -- collision size (px), owned by the type
 Spike.image = nil
 

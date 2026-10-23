@@ -169,7 +169,7 @@ end
 -- `inputs(tick, playerIndex)` gives the frames (default inputAt).
 local function run(ticks, frameDeltas, playerCount, root, inputs)
     inputs = inputs or inputAt
-    local level = Level.load(root or "example")
+    local level = Level.load(root or "kusogaki_stage1")
     fx.clearEffects()
     for _ = 1, playerCount or 1 do
         level:addPlayer(playerModule.new(level.spawn.x, level.spawn.y))

@@ -1,8 +1,8 @@
 -- Entity type script: "dodon_king", the boss of kusogaki_stage3. A giant
--- dodon with `maxHp` health. It walks toward the nearest player
+-- dodon (its own sprite) with `maxHp` health. It walks toward the nearest player
 -- and leaps at them every few seconds; at half health it gets faster (and the
--- level script sends dodons in when it lands). Stomps, kicks, thrown props and
--- blasts each take one health, then it flashes and cannot be hurt for
+-- level script rains dambos and lit fake boxes on the arena). It cannot be
+-- stomped; kicks, thrown props and blasts (a thrown lit box!) each take one health, then it flashes and cannot be hurt for
 -- `hurtTime` seconds. The first time its health runs out it only plays dead:
 -- it lies on its back for `fakeDeathTime` seconds, harmless, then gets up with
 -- `reviveHp`. The second time is for real. Touching it anywhere but the top
@@ -19,9 +19,9 @@ King.__index = King
 
 King.name = "dodon_king"
 King.kind = "enemy"
-King.assetPath = "assets/dodon.png" -- the dodon sheet, drawn SCALE times bigger
+King.assetPath = "assets/king.png" -- 2 walk frames of 48x48 side by side
 King.w, King.h = 40, 44
-King.SCALE = 3
+King.frameSize = 48
 King.maxHp = 8
 King.speed = 45          -- walk speed (px/s)
 King.angrySpeed = 75     -- at half health
@@ -40,7 +40,7 @@ King.frames = nil
 function King.load()
     if not King.image then
         King.image = Entity.loadImage(King.assetPath)
-        King.frames = Entity.sliceFrames(King.image, 16, 16)
+        King.frames = Entity.sliceFrames(King.image, King.frameSize, King.frameSize)
     end
     return King.image
 end
@@ -66,7 +66,6 @@ function King.new(x, y, def)
     self.jumpTimer = 0
     self.wasAirborne = false
     self.landed = false     -- true for the tick it lands from a leap (the level script reads it)
-    self.stompedBy = nil    -- id of the player who stomped it this tick
     self.animTime = 0
     return self
 end
@@ -106,7 +105,6 @@ local function nearestPlayer(self, players)
 end
 
 function King:update(delta, level)
-    self.stompedBy = nil
     self.landed = false
     self.hurt = math.max(0, self.hurt - delta)
     if self.fakeDead > 0 then
@@ -150,18 +148,15 @@ function King:update(delta, level)
     self.frameIndex = math.floor(self.animTime / King.frameTime) % #self.frames + 1
 end
 
--- A stomp hurts it and bounces the player; only the last health kills it.
+-- It cannot be stomped: landing on it is as deadly as touching it anywhere else
+-- (only kicks, thrown props and blasts hurt it).
 function King:onStomp(player)
-    self:hit()
-    self.stompedBy = player.id
-    player:bounce()
-    return self:isDown()
+    return false
 end
 
--- Touching it kills, except for the player who just stomped it (and while it
--- plays dead).
+-- Touching it kills (but not while it plays dead).
 function King:onTouch(player)
-    return self.stompedBy ~= player.id and self.fakeDead <= 0
+    return self.fakeDead <= 0
 end
 
 function King:onKick(player)
@@ -171,14 +166,14 @@ end
 
 function King:draw(ui)
     local frame = self.frames[self.frameIndex] or self.frames[1]
-    local size = 16 * King.SCALE
+    local size = King.frameSize
     local footY = self.y + self.h / 2
     if self.hurt > 0 and math.floor(self.hurt * 12) % 2 == 0 then
         ui.color(1, 0.35, 0.35, 1)
     else
         ui.color(1, 1, 1, 1)
     end
-    ui.sprite(self.image, frame, self.x, footY - size / 2, self.rotation, self.facing * King.SCALE, King.SCALE, 8, 8)
+    ui.sprite(self.image, frame, self.x, footY - size / 2, self.rotation, self.facing, 1, size / 2, size / 2)
 end
 
 return King

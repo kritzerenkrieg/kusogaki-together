@@ -30,7 +30,7 @@ Level.replaceStage = stages.replace
 -- ── Loading ───────────────────────────────────────────────────────────────
 
 -- Load a level package and build it, ready to run. `nameOrRoot` is a bundled
--- level name ("example") or a package root (see loader.rootFor); options.seed
+-- level name ("kusogaki_stage1") or a package root (see loader.rootFor); options.seed
 -- seeds the level's random generator (the host picks it; default 1).
 function Level.load(nameOrRoot, options)
     local data = loader.load(nameOrRoot, options)

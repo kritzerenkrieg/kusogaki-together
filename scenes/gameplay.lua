@@ -69,7 +69,7 @@ local gameplay = {}
 
 -- Command line (testing shortcuts; players use Multiplayer in the menu):
 -- `--level <name>` picks the level (levels/<name> in the save directory,
--- default "example"; a client plays the host's); `--host` / `--join <ip[:port]>` start network play
+-- default "kusogaki_stage1"; a client plays the host's); `--host` / `--join <ip[:port]>` start network play
 -- directly over a LAN or 127.0.0.1, without the server;
 -- `--net-lag <ms> --net-loss <percent>` make this machine's connection worse
 -- for testing (core/net/session.lua); `--local-coop` turns on the deprecated
@@ -77,7 +77,7 @@ local gameplay = {}
 -- `--host --online` opens a room on our server and shows its code;
 -- `--code <6 digits>` joins one; `--server <host[:port]>` names the server;
 -- `--relay-only` (host) relays every client of the room.
-local LEVEL_ROOT = "levels/example" -- the level played (or the room's level)
+local LEVEL_ROOT = "levels/kusogaki_stage1" -- the level played (or the room's level)
 local LOCAL_COOP = false
 local NET_MODE, JOIN_ADDRESS = nil, nil -- "host" | "client" | nil
 local NET_LAG, NET_LOSS = 0, 0          -- simulated extra round trip (s) and loss (fraction)
@@ -1255,6 +1255,7 @@ local function drawLevel()
     fx.drawCorpses()
     level:drawPlayers()
     fx.drawExplosions()
+    fx.drawShots()
     level:drawWorld()
     camera.popWorld()
     worldPushed = false
